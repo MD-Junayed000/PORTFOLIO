@@ -23,6 +23,7 @@ from models.schemas import (
     AboutContentResponse,
     ProjectBase,
     ProjectResponse,
+    ProjectReorderRequest,
     SkillBase,
     SkillResponse,
     ResearchBase,
@@ -48,6 +49,9 @@ UPLOAD_DIR = "./uploads"
 
 # Allowed image MIME types for photo uploads
 ALLOWED_IMAGE_TYPES = {"image/jpeg", "image/png", "image/gif", "image/webp"}
+
+# Allowed MIME types for certificate file uploads
+ALLOWED_CERT_TYPES = {"image/jpeg", "image/png", "image/gif", "image/webp", "application/pdf"}
 
 
 # About
@@ -115,6 +119,21 @@ async def delete_project(
     await db.delete(project)
     await db.commit()
     return {"detail": "Project deleted"}
+
+
+@router.post("/projects/reorder")
+async def reorder_projects(
+    data: ProjectReorderRequest,
+    db: AsyncSession = Depends(get_db),
+    admin: dict = Depends(get_current_admin),
+):
+    for item in data.projects:
+        result = await db.execute(select(Project).where(Project.id == item.id))
+        project = result.scalar_one_or_none()
+        if project:
+            project.order = item.order
+    await db.commit()
+    return {"detail": "Projects reordered"}
 
 
 # Skills
@@ -339,6 +358,40 @@ async def delete_cv(
     about.cv_file_path = None
     await db.commit()
     return {"detail": "CV deleted"}
+
+
+@router.post("/upload-certificate")
+async def upload_certificate(
+    file: UploadFile = File(...),
+    admin: dict = Depends(get_current_admin),
+):
+    # Validate content type
+    if file.content_type not in ALLOWED_CERT_TYPES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid file type. Allowed: images and PDF",
+        )
+
+    os.makedirs(UPLOAD_DIR, exist_ok=True)
+
+    # Read file content with size limit
+    content = await file.read()
+    if len(content) > settings.MAX_PDF_SIZE:
+        raise HTTPException(
+            status_code=400,
+            detail=f"File too large. Maximum size is {settings.MAX_PDF_SIZE // (1024 * 1024)} MB",
+        )
+
+    # Generate a safe UUID-based filename
+    ext = os.path.splitext(file.filename or "cert.jpg")[1].lower()
+    if ext not in (".jpg", ".jpeg", ".png", ".gif", ".webp", ".pdf"):
+        ext = ".jpg"
+    safe_filename = f"cert_{uuid.uuid4().hex}{ext}"
+    file_path = os.path.join(UPLOAD_DIR, safe_filename)
+
+    with open(file_path, "wb") as f:
+        f.write(content)
+    return {"file_url": f"/uploads/{safe_filename}"}
 
 
 @router.post("/upload-pdf")

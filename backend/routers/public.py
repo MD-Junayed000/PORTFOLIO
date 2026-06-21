@@ -1,7 +1,7 @@
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
-from typing import List
+from typing import List, Optional
 
 from database import (
     get_db,
@@ -53,8 +53,14 @@ async def get_about(db: AsyncSession = Depends(get_db)):
 
 
 @router.get("/projects", response_model=List[ProjectResponse])
-async def get_projects(db: AsyncSession = Depends(get_db)):
-    result = await db.execute(select(Project).order_by(Project.order))
+async def get_projects(
+    limit: Optional[int] = Query(None, ge=1),
+    db: AsyncSession = Depends(get_db),
+):
+    query = select(Project).order_by(Project.order)
+    if limit is not None:
+        query = query.limit(limit)
+    result = await db.execute(query)
     return result.scalars().all()
 
 

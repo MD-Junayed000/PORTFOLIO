@@ -56,6 +56,16 @@ class ProjectResponse(ProjectBase):
         from_attributes = True
 
 
+# Project reorder schema
+class ProjectReorderItem(BaseModel):
+    id: int
+    order: int
+
+
+class ProjectReorderRequest(BaseModel):
+    projects: List[ProjectReorderItem]
+
+
 # Skill schemas
 class SkillBase(BaseModel):
     category: str
@@ -92,6 +102,7 @@ class ExperienceBase(BaseModel):
     organization: str
     period: str
     description: Optional[str] = None
+    logo_url: Optional[str] = None
 
 
 class ExperienceResponse(ExperienceBase):

@@ -84,6 +84,7 @@ export interface Experience {
   organization: string;
   period: string;
   description: string | null;
+  logo_url: string | null;
   order: number;
 }
 

@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState, useRef } from "react";
-import { Plus, Pencil, Trash2, Loader2, X, Upload } from "lucide-react";
+import { Plus, Pencil, Trash2, Loader2, X, Upload, ArrowUp, ArrowDown, Save } from "lucide-react";
 import api from "@/lib/api";
 import toast from "react-hot-toast";
 import type { Project } from "@/types";
@@ -26,6 +26,8 @@ const emptyForm: ProjectForm = {
   order: 0,
 };
 
+const DISPLAY_COUNT_KEY = "portfolio_projects_display_count";
+
 export default function AdminProjects() {
   const [projects, setProjects] = useState<Project[]>([]);
   const [loading, setLoading] = useState(true);
@@ -34,6 +36,8 @@ export default function AdminProjects() {
   const [form, setForm] = useState<ProjectForm>(emptyForm);
   const [saving, setSaving] = useState(false);
   const [uploading, setUploading] = useState(false);
+  const [displayCount, setDisplayCount] = useState<number>(6);
+  const [reordering, setReordering] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const handleImageUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -66,7 +70,42 @@ export default function AdminProjects() {
 
   useEffect(() => {
     fetchProjects();
+    // Load display count from localStorage
+    const saved = localStorage.getItem(DISPLAY_COUNT_KEY);
+    if (saved) setDisplayCount(parseInt(saved) || 6);
   }, []);
+
+  const handleDisplayCountSave = () => {
+    localStorage.setItem(DISPLAY_COUNT_KEY, String(displayCount));
+    toast.success(`Display count set to ${displayCount}`);
+  };
+
+  const moveProject = async (index: number, direction: "up" | "down") => {
+    const newProjects = [...projects];
+    const swapIndex = direction === "up" ? index - 1 : index + 1;
+    if (swapIndex < 0 || swapIndex >= newProjects.length) return;
+
+    // Swap the items
+    [newProjects[index], newProjects[swapIndex]] = [newProjects[swapIndex], newProjects[index]];
+
+    // Update order values
+    const reordered = newProjects.map((p, i) => ({ ...p, order: i }));
+    setProjects(reordered);
+
+    // Save to backend
+    setReordering(true);
+    try {
+      await api.post("/api/admin/projects/reorder", {
+        projects: reordered.map((p) => ({ id: p.id, order: p.order })),
+      });
+      toast.success("Order updated");
+    } catch {
+      toast.error("Reorder failed");
+      fetchProjects();
+    } finally {
+      setReordering(false);
+    }
+  };
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -138,6 +177,29 @@ export default function AdminProjects() {
           <Plus size={16} />
           Add Project
         </button>
+      </div>
+
+      {/* Display count setting */}
+      <div className="mb-6 bg-surface border border-border rounded-lg p-4">
+        <div className="flex items-center gap-4">
+          <label className="text-sm text-muted whitespace-nowrap">
+            Projects to display on homepage:
+          </label>
+          <input
+            type="number"
+            min={1}
+            value={displayCount}
+            onChange={(e) => setDisplayCount(parseInt(e.target.value) || 6)}
+            className="w-20 bg-background border border-border rounded-lg px-3 py-1.5 text-sm text-foreground focus:outline-none focus:border-primary"
+          />
+          <button
+            onClick={handleDisplayCountSave}
+            className="inline-flex items-center gap-1 px-3 py-1.5 bg-primary hover:bg-primary-hover text-white rounded-lg text-xs font-medium transition-colors"
+          >
+            <Save size={12} />
+            Save
+          </button>
+        </div>
       </div>
 
       {/* Form modal */}
@@ -280,20 +342,41 @@ export default function AdminProjects() {
         </div>
       )}
 
-      {/* Project list */}
+      {/* Project list with reorder buttons */}
       <div className="space-y-3">
-        {projects.map((project) => (
+        {projects.map((project, index) => (
           <div
             key={project.id}
             className="bg-surface border border-border rounded-lg p-4 flex items-center justify-between"
           >
-            <div>
-              <h3 className="text-sm font-semibold text-foreground">
-                {project.name}
-              </h3>
-              <p className="text-xs text-muted mt-1">{project.tech_stack}</p>
+            <div className="flex items-center gap-3">
+              <div className="flex flex-col gap-0.5">
+                <button
+                  onClick={() => moveProject(index, "up")}
+                  disabled={index === 0 || reordering}
+                  className="p-1 text-muted hover:text-foreground transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
+                  aria-label="Move up"
+                >
+                  <ArrowUp size={14} />
+                </button>
+                <button
+                  onClick={() => moveProject(index, "down")}
+                  disabled={index === projects.length - 1 || reordering}
+                  className="p-1 text-muted hover:text-foreground transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
+                  aria-label="Move down"
+                >
+                  <ArrowDown size={14} />
+                </button>
+              </div>
+              <div>
+                <h3 className="text-sm font-semibold text-foreground">
+                  {project.name}
+                </h3>
+                <p className="text-xs text-muted mt-1">{project.tech_stack}</p>
+              </div>
             </div>
             <div className="flex items-center gap-2">
+              <span className="text-xs text-muted mr-2">#{project.order}</span>
               <button
                 onClick={() => handleEdit(project)}
                 className="p-2 text-muted hover:text-foreground transition-colors"

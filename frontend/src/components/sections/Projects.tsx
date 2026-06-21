@@ -2,11 +2,14 @@
 
 import { useEffect, useState } from "react";
 import { motion } from "framer-motion";
-import { ExternalLink } from "lucide-react";
+import { ExternalLink, ChevronDown } from "lucide-react";
 import { GithubIcon } from "@/components/icons";
 import Image from "next/image";
 import api from "@/lib/api";
 import type { Project } from "@/types";
+
+const DEFAULT_DISPLAY_COUNT = 6;
+const DISPLAY_COUNT_KEY = "portfolio_projects_display_count";
 
 function getImageUrl(url: string): string {
   // Convert GitHub blob URLs to raw.githubusercontent.com URLs
@@ -23,12 +26,20 @@ function getImageUrl(url: string): string {
 export default function Projects() {
   const [projects, setProjects] = useState<Project[]>([]);
   const [filter, setFilter] = useState<string>("All");
+  const [showAll, setShowAll] = useState(false);
+  const [displayCount, setDisplayCount] = useState(DEFAULT_DISPLAY_COUNT);
 
   useEffect(() => {
     api
       .get("/api/projects")
       .then((res) => setProjects(res.data))
       .catch(() => {});
+
+    // Read display count from localStorage (set by admin)
+    if (typeof window !== "undefined") {
+      const saved = localStorage.getItem(DISPLAY_COUNT_KEY);
+      if (saved) setDisplayCount(parseInt(saved) || DEFAULT_DISPLAY_COUNT);
+    }
   }, []);
 
   const allTechs = Array.from(
@@ -47,6 +58,9 @@ export default function Projects() {
       : projects.filter((p) =>
           p.tech_stack.toLowerCase().includes(filter.toLowerCase())
         );
+
+  const visibleProjects = showAll ? filtered : filtered.slice(0, displayCount);
+  const hasMore = filtered.length > displayCount;
 
   return (
     <section id="projects" className="py-20">
@@ -69,7 +83,7 @@ export default function Projects() {
             {categories.map((cat) => (
               <button
                 key={cat}
-                onClick={() => setFilter(cat)}
+                onClick={() => { setFilter(cat); setShowAll(false); }}
                 className={`px-4 py-1.5 text-xs rounded-full border transition-colors font-medium ${
                   filter === cat
                     ? "bg-primary text-white border-primary"
@@ -83,7 +97,7 @@ export default function Projects() {
 
           {/* Project grid */}
           <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-6">
-            {filtered.map((project, idx) => (
+            {visibleProjects.map((project, idx) => (
               <motion.div
                 key={project.id}
                 initial={{ opacity: 0, y: 20 }}
@@ -149,6 +163,19 @@ export default function Projects() {
               </motion.div>
             ))}
           </div>
+
+          {/* Show All button */}
+          {hasMore && !showAll && (
+            <div className="flex justify-center mt-10">
+              <button
+                onClick={() => setShowAll(true)}
+                className="inline-flex items-center gap-2 px-6 py-2.5 bg-surface border border-border rounded-full text-sm font-medium text-muted hover:text-foreground hover:border-primary/50 transition-colors"
+              >
+                Show All Projects
+                <ChevronDown size={16} />
+              </button>
+            </div>
+          )}
         </motion.div>
       </div>
     </section>

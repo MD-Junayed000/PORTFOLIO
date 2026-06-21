@@ -3,8 +3,11 @@
 import { useEffect, useState } from "react";
 import { motion } from "framer-motion";
 import { Briefcase } from "lucide-react";
+import Image from "next/image";
 import api from "@/lib/api";
 import type { Experience as ExperienceType } from "@/types";
+
+const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
 
 export default function Experience() {
   const [experiences, setExperiences] = useState<ExperienceType[]>([]);
@@ -76,6 +79,17 @@ export default function Experience() {
                             </p>
                           )}
                         </div>
+                        {item.logo_url && (
+                          <div className="flex-shrink-0 ml-4">
+                            <Image
+                              src={`${API_URL}${item.logo_url}`}
+                              alt={`${item.organization} logo`}
+                              width={48}
+                              height={48}
+                              className="rounded-lg object-contain"
+                            />
+                          </div>
+                        )}
                       </div>
                     </div>
                   </motion.div>

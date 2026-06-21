@@ -1,7 +1,7 @@
 "use client";
 
-import { useEffect, useState } from "react";
-import { Plus, Pencil, Trash2, Loader2, X } from "lucide-react";
+import { useEffect, useState, useRef } from "react";
+import { Plus, Pencil, Trash2, Loader2, X, Upload, FileText } from "lucide-react";
 import api from "@/lib/api";
 import toast from "react-hot-toast";
 import type { Certificate } from "@/types";
@@ -10,9 +10,10 @@ interface CertificateForm {
   name: string;
   issuer: string;
   date: string;
+  file_path: string;
 }
 
-const emptyForm: CertificateForm = { name: "", issuer: "", date: "" };
+const emptyForm: CertificateForm = { name: "", issuer: "", date: "", file_path: "" };
 
 export default function AdminCertificates() {
   const [certificates, setCertificates] = useState<Certificate[]>([]);
@@ -21,6 +22,28 @@ export default function AdminCertificates() {
   const [editingId, setEditingId] = useState<number | null>(null);
   const [form, setForm] = useState<CertificateForm>(emptyForm);
   const [saving, setSaving] = useState(false);
+  const [uploading, setUploading] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
+  const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setUploading(true);
+    try {
+      const formData = new FormData();
+      formData.append("file", file);
+      const res = await api.post("/api/admin/upload-certificate", formData, {
+        headers: { "Content-Type": "multipart/form-data" },
+      });
+      setForm({ ...form, file_path: res.data.file_url });
+      toast.success("File uploaded");
+    } catch {
+      toast.error("Upload failed");
+    } finally {
+      setUploading(false);
+      if (fileInputRef.current) fileInputRef.current.value = "";
+    }
+  };
 
   const fetchCertificates = () => {
     api
@@ -38,11 +61,17 @@ export default function AdminCertificates() {
     e.preventDefault();
     setSaving(true);
     try {
+      const payload = {
+        name: form.name,
+        issuer: form.issuer,
+        date: form.date,
+        file_path: form.file_path || null,
+      };
       if (editingId) {
-        await api.put(`/api/admin/certificates/${editingId}`, form);
+        await api.put(`/api/admin/certificates/${editingId}`, payload);
         toast.success("Certificate updated");
       } else {
-        await api.post("/api/admin/certificates", form);
+        await api.post("/api/admin/certificates", payload);
         toast.success("Certificate created");
       }
       setShowForm(false);
@@ -61,6 +90,7 @@ export default function AdminCertificates() {
       name: cert.name,
       issuer: cert.issuer,
       date: cert.date,
+      file_path: cert.file_path || "",
     });
     setEditingId(cert.id);
     setShowForm(true);
@@ -149,6 +179,40 @@ export default function AdminCertificates() {
                 />
               </div>
             </div>
+            <div>
+              <label className="block text-sm text-muted mb-1">
+                Certificate File (jpg/pdf)
+              </label>
+              <div className="flex items-center gap-2">
+                <input
+                  type="text"
+                  value={form.file_path}
+                  onChange={(e) => setForm({ ...form, file_path: e.target.value })}
+                  className="flex-1 bg-background border border-border rounded-lg px-3 py-2 text-sm text-foreground focus:outline-none focus:border-primary"
+                  placeholder="Upload or paste URL..."
+                />
+                <input
+                  ref={fileInputRef}
+                  type="file"
+                  accept="image/*,.pdf"
+                  onChange={handleFileUpload}
+                  className="hidden"
+                />
+                <button
+                  type="button"
+                  onClick={() => fileInputRef.current?.click()}
+                  disabled={uploading}
+                  className="inline-flex items-center gap-1 px-3 py-2 bg-background border border-border rounded-lg text-sm text-muted hover:text-foreground hover:border-primary/50 transition-colors disabled:opacity-50"
+                >
+                  {uploading ? (
+                    <Loader2 size={14} className="animate-spin" />
+                  ) : (
+                    <Upload size={14} />
+                  )}
+                  Upload
+                </button>
+              </div>
+            </div>
             <button
               type="submit"
               disabled={saving}
@@ -167,13 +231,18 @@ export default function AdminCertificates() {
             key={cert.id}
             className="bg-surface border border-border rounded-lg p-4 flex items-center justify-between"
           >
-            <div>
-              <h3 className="text-sm font-semibold text-foreground">
-                {cert.name}
-              </h3>
-              <p className="text-xs text-muted mt-1">
-                {cert.issuer} - {cert.date}
-              </p>
+            <div className="flex items-center gap-3">
+              {cert.file_path && (
+                <FileText size={16} className="text-primary flex-shrink-0" />
+              )}
+              <div>
+                <h3 className="text-sm font-semibold text-foreground">
+                  {cert.name}
+                </h3>
+                <p className="text-xs text-muted mt-1">
+                  {cert.issuer} - {cert.date}
+                </p>
+              </div>
             </div>
             <div className="flex items-center gap-2">
               <button
