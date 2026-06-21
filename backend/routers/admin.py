@@ -1,4 +1,5 @@
 import os
+import time
 import uuid
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form, Query
@@ -670,6 +671,40 @@ async def verify_hf_token(
             return {"valid": False, "detail": "Token is invalid or expired"}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to verify token: {str(e)}")
+
+
+@router.post("/settings/smoke-test")
+async def smoke_test(
+    admin: dict = Depends(get_current_admin),
+):
+    """Run an end-to-end smoke test of the chatbot pipeline."""
+    from services.chatbot import generate_response
+
+    test_message = "Who is Muhammad Junayed?"
+    used_hf_api = bool(settings.HF_API_TOKEN)
+    model_used = settings.HF_MODEL_ID if used_hf_api else "fallback (no API)"
+
+    start_time = time.time()
+    try:
+        result = await generate_response(test_message)
+        elapsed_ms = round((time.time() - start_time) * 1000)
+        return {
+            "status": "success",
+            "response": result.get("response", ""),
+            "sources": result.get("sources", []),
+            "used_hf_api": used_hf_api,
+            "model": model_used,
+            "response_time_ms": elapsed_ms,
+        }
+    except Exception as e:
+        elapsed_ms = round((time.time() - start_time) * 1000)
+        return {
+            "status": "failed",
+            "error": str(e),
+            "used_hf_api": used_hf_api,
+            "model": model_used,
+            "response_time_ms": elapsed_ms,
+        }
 
 
 # Database viewer
