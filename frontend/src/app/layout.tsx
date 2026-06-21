@@ -25,6 +25,9 @@ export const metadata: Metadata = {
     "Portfolio",
     "Muhammad Junayed",
   ],
+  icons: {
+    icon: "/images/icon.png",
+  },
 };
 
 export default function RootLayout({
@@ -43,9 +46,9 @@ export default function RootLayout({
           position="top-right"
           toastOptions={{
             style: {
-              background: "#1e293b",
-              color: "#e2e8f0",
-              border: "1px solid #334155",
+              background: "#ffffff",
+              color: "#1a1a1a",
+              border: "1px solid #e5e2dc",
             },
           }}
         />

@@ -4,46 +4,40 @@ import { useEffect, useState } from "react";
 import { Plus, Pencil, Trash2, Loader2, X } from "lucide-react";
 import api from "@/lib/api";
 import toast from "react-hot-toast";
-import type { Project } from "@/types";
+import type { Experience } from "@/types";
 
-interface ProjectForm {
-  name: string;
+interface ExperienceForm {
+  title: string;
+  organization: string;
+  period: string;
   description: string;
-  tech_stack: string;
-  repo_url: string;
-  demo_url: string;
-  image_url: string;
-  order: number;
 }
 
-const emptyForm: ProjectForm = {
-  name: "",
+const emptyForm: ExperienceForm = {
+  title: "",
+  organization: "",
+  period: "",
   description: "",
-  tech_stack: "",
-  repo_url: "",
-  demo_url: "",
-  image_url: "",
-  order: 0,
 };
 
-export default function AdminProjects() {
-  const [projects, setProjects] = useState<Project[]>([]);
+export default function AdminExperiences() {
+  const [experiences, setExperiences] = useState<Experience[]>([]);
   const [loading, setLoading] = useState(true);
   const [showForm, setShowForm] = useState(false);
   const [editingId, setEditingId] = useState<number | null>(null);
-  const [form, setForm] = useState<ProjectForm>(emptyForm);
+  const [form, setForm] = useState<ExperienceForm>(emptyForm);
   const [saving, setSaving] = useState(false);
 
-  const fetchProjects = () => {
+  const fetchExperiences = () => {
     api
-      .get("/api/projects")
-      .then((res) => setProjects(res.data))
-      .catch(() => {})
+      .get("/api/admin/experiences")
+      .then((res) => setExperiences(res.data))
+      .catch(() => setExperiences([]))
       .finally(() => setLoading(false));
   };
 
   useEffect(() => {
-    fetchProjects();
+    fetchExperiences();
   }, []);
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -51,16 +45,16 @@ export default function AdminProjects() {
     setSaving(true);
     try {
       if (editingId) {
-        await api.put(`/api/admin/projects/${editingId}`, form);
-        toast.success("Project updated");
+        await api.put(`/api/admin/experiences/${editingId}`, form);
+        toast.success("Experience updated");
       } else {
-        await api.post("/api/admin/projects", form);
-        toast.success("Project created");
+        await api.post("/api/admin/experiences", form);
+        toast.success("Experience created");
       }
       setShowForm(false);
       setEditingId(null);
       setForm(emptyForm);
-      fetchProjects();
+      fetchExperiences();
     } catch {
       toast.error("Operation failed");
     } finally {
@@ -68,26 +62,23 @@ export default function AdminProjects() {
     }
   };
 
-  const handleEdit = (project: Project) => {
+  const handleEdit = (exp: Experience) => {
     setForm({
-      name: project.name,
-      description: project.description,
-      tech_stack: project.tech_stack,
-      repo_url: project.repo_url || "",
-      demo_url: project.demo_url || "",
-      image_url: project.image_url || "",
-      order: project.order,
+      title: exp.title,
+      organization: exp.organization,
+      period: exp.period,
+      description: exp.description || "",
     });
-    setEditingId(project.id);
+    setEditingId(exp.id);
     setShowForm(true);
   };
 
   const handleDelete = async (id: number) => {
-    if (!confirm("Delete this project?")) return;
+    if (!confirm("Delete this experience?")) return;
     try {
-      await api.delete(`/api/admin/projects/${id}`);
-      toast.success("Project deleted");
-      fetchProjects();
+      await api.delete(`/api/admin/experiences/${id}`);
+      toast.success("Experience deleted");
+      fetchExperiences();
     } catch {
       toast.error("Delete failed");
     }
@@ -104,7 +95,7 @@ export default function AdminProjects() {
   return (
     <div>
       <div className="flex items-center justify-between mb-6">
-        <h1 className="text-2xl font-bold text-foreground">Projects</h1>
+        <h1 className="text-2xl font-bold text-foreground">Experiences</h1>
         <button
           onClick={() => {
             setForm(emptyForm);
@@ -114,16 +105,16 @@ export default function AdminProjects() {
           className="inline-flex items-center gap-2 px-3 py-2 bg-primary hover:bg-primary-hover text-white rounded-lg text-sm font-medium transition-colors"
         >
           <Plus size={16} />
-          Add Project
+          Add Experience
         </button>
       </div>
 
-      {/* Form modal */}
+      {/* Form */}
       {showForm && (
         <div className="mb-6 bg-surface border border-border rounded-lg p-6">
           <div className="flex items-center justify-between mb-4">
             <h2 className="text-lg font-semibold text-foreground">
-              {editingId ? "Edit Project" : "New Project"}
+              {editingId ? "Edit Experience" : "New Experience"}
             </h2>
             <button
               onClick={() => setShowForm(false)}
@@ -135,28 +126,41 @@ export default function AdminProjects() {
           <form onSubmit={handleSubmit} className="space-y-4">
             <div className="grid sm:grid-cols-2 gap-4">
               <div>
-                <label className="block text-sm text-muted mb-1">Name</label>
+                <label className="block text-sm text-muted mb-1">Title</label>
                 <input
                   type="text"
-                  value={form.name}
-                  onChange={(e) => setForm({ ...form, name: e.target.value })}
+                  value={form.title}
+                  onChange={(e) => setForm({ ...form, title: e.target.value })}
                   className="w-full bg-background border border-border rounded-lg px-3 py-2 text-sm text-foreground focus:outline-none focus:border-primary"
                   required
                 />
               </div>
               <div>
                 <label className="block text-sm text-muted mb-1">
-                  Tech Stack (comma-separated)
+                  Organization
                 </label>
                 <input
                   type="text"
-                  value={form.tech_stack}
+                  value={form.organization}
                   onChange={(e) =>
-                    setForm({ ...form, tech_stack: e.target.value })
+                    setForm({ ...form, organization: e.target.value })
                   }
                   className="w-full bg-background border border-border rounded-lg px-3 py-2 text-sm text-foreground focus:outline-none focus:border-primary"
+                  required
                 />
               </div>
+            </div>
+            <div>
+              <label className="block text-sm text-muted mb-1">
+                Period (e.g., Jan 2022 - Present)
+              </label>
+              <input
+                type="text"
+                value={form.period}
+                onChange={(e) => setForm({ ...form, period: e.target.value })}
+                className="w-full bg-background border border-border rounded-lg px-3 py-2 text-sm text-foreground focus:outline-none focus:border-primary"
+                required
+              />
             </div>
             <div>
               <label className="block text-sm text-muted mb-1">
@@ -171,59 +175,6 @@ export default function AdminProjects() {
                 className="w-full bg-background border border-border rounded-lg px-3 py-2 text-sm text-foreground focus:outline-none focus:border-primary resize-none"
               />
             </div>
-            <div>
-              <label className="block text-sm text-muted mb-1">
-                Image URL
-              </label>
-              <input
-                type="url"
-                value={form.image_url}
-                onChange={(e) =>
-                  setForm({ ...form, image_url: e.target.value })
-                }
-                className="w-full bg-background border border-border rounded-lg px-3 py-2 text-sm text-foreground focus:outline-none focus:border-primary"
-                placeholder="https://..."
-              />
-            </div>
-            <div className="grid sm:grid-cols-3 gap-4">
-              <div>
-                <label className="block text-sm text-muted mb-1">
-                  Repo URL
-                </label>
-                <input
-                  type="url"
-                  value={form.repo_url}
-                  onChange={(e) =>
-                    setForm({ ...form, repo_url: e.target.value })
-                  }
-                  className="w-full bg-background border border-border rounded-lg px-3 py-2 text-sm text-foreground focus:outline-none focus:border-primary"
-                />
-              </div>
-              <div>
-                <label className="block text-sm text-muted mb-1">
-                  Demo URL
-                </label>
-                <input
-                  type="url"
-                  value={form.demo_url}
-                  onChange={(e) =>
-                    setForm({ ...form, demo_url: e.target.value })
-                  }
-                  className="w-full bg-background border border-border rounded-lg px-3 py-2 text-sm text-foreground focus:outline-none focus:border-primary"
-                />
-              </div>
-              <div>
-                <label className="block text-sm text-muted mb-1">Order</label>
-                <input
-                  type="number"
-                  value={form.order}
-                  onChange={(e) =>
-                    setForm({ ...form, order: parseInt(e.target.value) || 0 })
-                  }
-                  className="w-full bg-background border border-border rounded-lg px-3 py-2 text-sm text-foreground focus:outline-none focus:border-primary"
-                />
-              </div>
-            </div>
             <button
               type="submit"
               disabled={saving}
@@ -236,29 +187,36 @@ export default function AdminProjects() {
         </div>
       )}
 
-      {/* Project list */}
+      {/* Experience list */}
       <div className="space-y-3">
-        {projects.map((project) => (
+        {experiences.length === 0 && (
+          <p className="text-sm text-muted text-center py-8">
+            No experiences added yet.
+          </p>
+        )}
+        {experiences.map((exp) => (
           <div
-            key={project.id}
+            key={exp.id}
             className="bg-surface border border-border rounded-lg p-4 flex items-center justify-between"
           >
             <div>
               <h3 className="text-sm font-semibold text-foreground">
-                {project.name}
+                {exp.title}
               </h3>
-              <p className="text-xs text-muted mt-1">{project.tech_stack}</p>
+              <p className="text-xs text-muted mt-1">
+                {exp.organization} &middot; {exp.period}
+              </p>
             </div>
             <div className="flex items-center gap-2">
               <button
-                onClick={() => handleEdit(project)}
+                onClick={() => handleEdit(exp)}
                 className="p-2 text-muted hover:text-foreground transition-colors"
                 aria-label="Edit"
               >
                 <Pencil size={14} />
               </button>
               <button
-                onClick={() => handleDelete(project.id)}
+                onClick={() => handleDelete(exp.id)}
                 className="p-2 text-muted hover:text-red-400 transition-colors"
                 aria-label="Delete"
               >

@@ -2,7 +2,7 @@
 
 import { useState, useRef, useEffect } from "react";
 import { motion, AnimatePresence } from "framer-motion";
-import { MessageCircle, X, Send, Loader2 } from "lucide-react";
+import { MessageCircle, X, Send, Loader2, Sparkles } from "lucide-react";
 import api from "@/lib/api";
 import type { ChatMessage } from "@/types";
 
@@ -54,14 +54,17 @@ export default function ChatWidget() {
             initial={{ opacity: 0, y: 20, scale: 0.9 }}
             animate={{ opacity: 1, y: 0, scale: 1 }}
             exit={{ opacity: 0, y: 20, scale: 0.9 }}
-            className="mb-4 w-80 sm:w-96 bg-surface border border-border rounded-lg shadow-2xl overflow-hidden flex flex-col"
+            className="mb-4 w-80 sm:w-96 bg-surface border border-border rounded-xl shadow-xl overflow-hidden flex flex-col"
             style={{ height: "28rem" }}
           >
             {/* Header */}
-            <div className="flex items-center justify-between p-4 border-b border-border">
-              <h3 className="text-sm font-semibold text-foreground">
-                Ask me anything
-              </h3>
+            <div className="flex items-center justify-between p-4 border-b border-border bg-background">
+              <div className="flex items-center gap-2">
+                <Sparkles size={16} className="text-primary" />
+                <h3 className="text-sm font-semibold text-foreground">
+                  Ask about Junayed
+                </h3>
+              </div>
               <button
                 onClick={() => setIsOpen(false)}
                 className="text-muted hover:text-foreground transition-colors"
@@ -72,11 +75,29 @@ export default function ChatWidget() {
             </div>
 
             {/* Messages */}
-            <div className="flex-1 overflow-y-auto p-4 space-y-3">
+            <div className="flex-1 overflow-y-auto p-4 space-y-3 bg-background/50">
               {messages.length === 0 && (
-                <p className="text-xs text-muted text-center mt-8">
-                  Ask me about my projects, skills, or experience.
-                </p>
+                <div className="text-center mt-12 space-y-2">
+                  <Sparkles size={24} className="mx-auto text-primary/60" />
+                  <p className="text-sm text-muted">
+                    Ask me about Junayed&apos;s projects, skills, or experience.
+                  </p>
+                  <div className="flex flex-wrap justify-center gap-2 mt-4">
+                    {["What are his projects?", "Tell me about his skills", "Research work?"].map(
+                      (suggestion) => (
+                        <button
+                          key={suggestion}
+                          onClick={() => {
+                            setInput(suggestion);
+                          }}
+                          className="text-xs px-3 py-1.5 bg-surface border border-border rounded-full text-muted hover:text-foreground hover:border-primary/50 transition-colors"
+                        >
+                          {suggestion}
+                        </button>
+                      )
+                    )}
+                  </div>
+                </div>
               )}
               {messages.map((msg, idx) => (
                 <div
@@ -86,10 +107,10 @@ export default function ChatWidget() {
                   }`}
                 >
                   <div
-                    className={`max-w-[80%] px-3 py-2 rounded-lg text-sm ${
+                    className={`max-w-[80%] px-3 py-2 rounded-xl text-sm ${
                       msg.role === "user"
-                        ? "bg-primary text-white"
-                        : "bg-background border border-border text-foreground"
+                        ? "bg-primary text-white rounded-br-sm"
+                        : "bg-surface border border-border text-foreground rounded-bl-sm"
                     }`}
                   >
                     {msg.content}
@@ -98,8 +119,8 @@ export default function ChatWidget() {
               ))}
               {loading && (
                 <div className="flex justify-start">
-                  <div className="bg-background border border-border rounded-lg px-3 py-2">
-                    <Loader2 size={16} className="animate-spin text-muted" />
+                  <div className="bg-surface border border-border rounded-xl px-3 py-2">
+                    <Loader2 size={16} className="animate-spin text-primary" />
                   </div>
                 </div>
               )}
@@ -107,7 +128,7 @@ export default function ChatWidget() {
             </div>
 
             {/* Input */}
-            <div className="p-3 border-t border-border">
+            <div className="p-3 border-t border-border bg-surface">
               <form
                 onSubmit={(e) => {
                   e.preventDefault();
@@ -119,8 +140,8 @@ export default function ChatWidget() {
                   type="text"
                   value={input}
                   onChange={(e) => setInput(e.target.value)}
-                  placeholder="Type a message..."
-                  className="flex-1 bg-background border border-border rounded-lg px-3 py-2 text-sm text-foreground placeholder:text-muted focus:outline-none focus:border-primary"
+                  placeholder="Ask about Junayed..."
+                  className="flex-1 bg-background border border-border rounded-lg px-3 py-2 text-sm text-foreground placeholder:text-muted focus:outline-none focus:border-primary transition-colors"
                 />
                 <button
                   type="submit"
@@ -139,10 +160,10 @@ export default function ChatWidget() {
       {/* Toggle button */}
       <button
         onClick={() => setIsOpen(!isOpen)}
-        className="w-12 h-12 bg-primary hover:bg-primary-hover text-white rounded-full shadow-lg flex items-center justify-center transition-colors"
-        aria-label="Toggle chat"
+        className="w-14 h-14 bg-primary hover:bg-primary-hover text-white rounded-full shadow-lg flex items-center justify-center transition-all hover:scale-105"
+        aria-label="Ask about Junayed"
       >
-        {isOpen ? <X size={20} /> : <MessageCircle size={20} />}
+        {isOpen ? <X size={22} /> : <MessageCircle size={22} />}
       </button>
     </div>
   );

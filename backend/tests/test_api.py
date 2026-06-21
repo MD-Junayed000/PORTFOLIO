@@ -168,3 +168,167 @@ async def test_verify_token_valid():
     assert response.status_code == 200
     data = response.json()
     assert data["status"] == "valid"
+
+
+@pytest.mark.anyio
+async def test_get_experiences():
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.get("/api/experiences")
+    assert response.status_code == 200
+    data = response.json()
+    assert isinstance(data, list)
+
+
+@pytest.mark.anyio
+async def test_post_contact():
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.post(
+            "/api/contact",
+            json={
+                "name": "Test User",
+                "email": "test@example.com",
+                "message": "Hello, this is a test message.",
+            },
+        )
+    assert response.status_code == 200
+    data = response.json()
+    assert data["name"] == "Test User"
+    assert data["email"] == "test@example.com"
+    assert data["message"] == "Hello, this is a test message."
+    assert "id" in data
+
+
+@pytest.mark.anyio
+async def test_get_admin_database():
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        # Login first
+        login_response = await client.post(
+            "/api/auth/login",
+            json={"username": "admin", "password": "admin123"},
+        )
+        token = login_response.json()["access_token"]
+
+        # Get database info
+        response = await client.get(
+            "/api/admin/database",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+    assert response.status_code == 200
+    data = response.json()
+    assert "tables" in data
+    assert isinstance(data["tables"], list)
+    # Should have at least the core tables
+    table_names = [t["name"] for t in data["tables"]]
+    assert "projects" in table_names
+    assert "contact_messages" in table_names
+    assert "documents" in table_names
+
+
+@pytest.mark.anyio
+async def test_admin_experiences_crud():
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        # Login first
+        login_response = await client.post(
+            "/api/auth/login",
+            json={"username": "admin", "password": "admin123"},
+        )
+        token = login_response.json()["access_token"]
+        headers = {"Authorization": f"Bearer {token}"}
+
+        # Create experience
+        response = await client.post(
+            "/api/admin/experiences",
+            json={
+                "title": "Software Engineer",
+                "organization": "Test Corp",
+                "period": "2022-2023",
+                "description": "Built things",
+            },
+            headers=headers,
+        )
+        assert response.status_code == 200
+        data = response.json()
+        assert data["title"] == "Software Engineer"
+        exp_id = data["id"]
+
+        # Update experience
+        response = await client.put(
+            f"/api/admin/experiences/{exp_id}",
+            json={
+                "title": "Senior Software Engineer",
+                "organization": "Test Corp",
+                "period": "2022-2024",
+                "description": "Built more things",
+            },
+            headers=headers,
+        )
+        assert response.status_code == 200
+        assert response.json()["title"] == "Senior Software Engineer"
+
+        # Delete experience
+        response = await client.delete(
+            f"/api/admin/experiences/{exp_id}",
+            headers=headers,
+        )
+        assert response.status_code == 200
+
+
+@pytest.mark.anyio
+async def test_admin_messages():
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        # First create a contact message
+        await client.post(
+            "/api/contact",
+            json={
+                "name": "Msg User",
+                "email": "msg@example.com",
+                "message": "Test message for admin",
+            },
+        )
+
+        # Login
+        login_response = await client.post(
+            "/api/auth/login",
+            json={"username": "admin", "password": "admin123"},
+        )
+        token = login_response.json()["access_token"]
+        headers = {"Authorization": f"Bearer {token}"}
+
+        # List messages
+        response = await client.get("/api/admin/messages", headers=headers)
+        assert response.status_code == 200
+        data = response.json()
+        assert isinstance(data, list)
+        assert len(data) >= 1
+
+        # Delete message
+        msg_id = data[0]["id"]
+        response = await client.delete(
+            f"/api/admin/messages/{msg_id}", headers=headers
+        )
+        assert response.status_code == 200
+
+
+@pytest.mark.anyio
+async def test_admin_settings_get():
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        # Login
+        login_response = await client.post(
+            "/api/auth/login",
+            json={"username": "admin", "password": "admin123"},
+        )
+        token = login_response.json()["access_token"]
+        headers = {"Authorization": f"Bearer {token}"}
+
+        # Get settings
+        response = await client.get("/api/admin/settings", headers=headers)
+        assert response.status_code == 200
+        data = response.json()
+        assert "hf_model_id" in data
+        assert "has_token" in data

@@ -49,7 +49,11 @@ async def generate_response(user_message: str) -> dict:
 
 def _build_prompt(user_message: str, context: str) -> str:
     system = SYSTEM_PROMPT.format(context=context)
-    return f"<s>[INST] {system}\n\nUser question: {user_message} [/INST]"
+    return (
+        f"<|begin_of_text|><|start_header_id|>system<|end_header_id|>\n\n"
+        f"{system}<|eot_id|><|start_header_id|>user<|end_header_id|>\n\n"
+        f"{user_message}<|eot_id|><|start_header_id|>assistant<|end_header_id|>\n\n"
+    )
 
 
 async def _call_hf_api(prompt: str) -> str:

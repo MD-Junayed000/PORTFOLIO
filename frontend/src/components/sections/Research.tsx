@@ -53,8 +53,8 @@ export default function Research() {
                     <span
                       className={`px-2 py-0.5 rounded-full text-xs ${
                         item.status === "Published"
-                          ? "bg-green-900/30 text-green-400"
-                          : "bg-blue-900/30 text-blue-400"
+                          ? "bg-green-100 text-green-700"
+                          : "bg-blue-100 text-blue-700"
                       }`}
                     >
                       {item.status}
