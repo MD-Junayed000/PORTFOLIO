@@ -5,13 +5,13 @@ from config import settings
 from services.vector_store import query as vector_query
 
 
-SYSTEM_PROMPT = """You are an AI assistant for Muhammad Junayed's portfolio website. 
-Muhammad Junayed is an AI Engineering Enthusiast specializing in Computer Vision and Cloud-Native ML Systems. 
+SYSTEM_PROMPT = """You are an AI assistant for Muhammad Junayed's portfolio website.
+Muhammad Junayed is an AI Engineering Enthusiast specializing in Computer Vision and Cloud-Native ML Systems.
 He is a final-year ETE student at CUET.
 
-Answer questions about Muhammad Junayed based on the provided context. 
-Be helpful, concise, and professional. If you don't have enough information to answer a question, 
-say so politely and suggest what the visitor might want to know about Muhammad Junayed.
+Answer questions about Muhammad Junayed directly and concisely using ONLY the provided context below.
+Do not make up information. If the context contains relevant information, present it clearly.
+If you don't have enough information in the context to answer, say so politely.
 
 Context from knowledge base:
 {context}
@@ -78,38 +78,61 @@ async def _call_hf_api(prompt: str) -> str:
     return "I apologize, but I could not generate a response at this time."
 
 
+def _format_context_response(context: str) -> str:
+    """Format retrieved context into a coherent, readable response."""
+    # Clean up the context - remove excessive whitespace and normalize
+    lines = context.strip().split("\n")
+    cleaned_lines = [line.strip() for line in lines if line.strip()]
+    cleaned = " ".join(cleaned_lines)
+
+    # Truncate at a sentence boundary rather than mid-sentence
+    if len(cleaned) > 800:
+        # Find the last sentence end before 800 chars
+        truncated = cleaned[:800]
+        last_period = max(
+            truncated.rfind(". "),
+            truncated.rfind("! "),
+            truncated.rfind("? "),
+        )
+        if last_period > 200:
+            cleaned = truncated[: last_period + 1]
+        else:
+            # Fall back to last space
+            last_space = truncated.rfind(" ")
+            if last_space > 200:
+                cleaned = truncated[:last_space] + "..."
+            else:
+                cleaned = truncated + "..."
+
+    return cleaned
+
+
 def _generate_fallback_response(user_message: str, context: str) -> str:
-    """Generate a simple response when HF API is not available."""
+    """Generate a response using retrieved context when HF API is not available."""
     message_lower = user_message.lower()
 
-    if any(word in message_lower for word in ["hello", "hi", "hey"]):
-        return ("Hello! I'm Muhammad Junayed's AI assistant. "
-                "I can tell you about his projects, skills, research, and experience. "
-                "What would you like to know?")
-
-    if any(word in message_lower for word in ["project", "work", "portfolio"]):
-        return ("Muhammad Junayed has worked on several exciting projects including "
-                "AroBot (an Agentic RAG Multi-Modal Chatbot for healthcare), "
-                "Uber Fare Prediction with MLOps pipeline, "
-                "and Tabular-QA for question answering over structured datasets. "
-                "Would you like to know more about any specific project?")
-
-    if any(word in message_lower for word in ["skill", "technology", "tech"]):
-        return ("Muhammad Junayed's key skills include AI/ML (PyTorch, TensorFlow, Computer Vision), "
-                "LLM Systems (RAG pipelines, Agent orchestration), "
-                "MLOps (Airflow, ZenML, MLflow), "
-                "and Backend Development (FastAPI, Flask, Node.js). "
-                "What area interests you?")
-
-    if any(word in message_lower for word in ["research", "paper", "publication"]):
-        return ("Muhammad Junayed's research includes his B.Sc. thesis on hallucination detection "
-                "in LLMs, CNN-based defect recognition published at ICAEEE 2024 (IEEE), "
-                "and Vision Transformer work for breast ultrasound classification. "
-                "Would you like more details?")
-
+    # If we have meaningful context from the vector store, use it directly
     if context and context != "No specific context available.":
-        return f"Based on what I know about Muhammad Junayed: {context[:500]}"
+        formatted = _format_context_response(context)
+        # Provide a conversational wrapper based on question type
+        if any(word in message_lower for word in ["hello", "hi", "hey"]):
+            return (
+                "Hello! I'm Muhammad Junayed's AI assistant. "
+                "I can tell you about his projects, skills, research, and experience. "
+                "What would you like to know?"
+            )
+        return f"Based on what I know: {formatted}"
 
-    return ("I'm Muhammad Junayed's AI portfolio assistant. "
-            "I can help you learn about his projects, skills, research, and background. "
-            "Please ask me something specific!")
+    # Only use generic responses when no context is available at all
+    if any(word in message_lower for word in ["hello", "hi", "hey"]):
+        return (
+            "Hello! I'm Muhammad Junayed's AI assistant. "
+            "I can tell you about his projects, skills, research, and experience. "
+            "What would you like to know?"
+        )
+
+    return (
+        "I'm Muhammad Junayed's AI portfolio assistant. "
+        "I can help you learn about his projects, skills, research, and background. "
+        "Please ask me something specific!"
+    )

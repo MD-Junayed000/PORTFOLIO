@@ -1,7 +1,7 @@
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, BackgroundTasks, Depends, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
-from typing import List
+from typing import List, Optional
 
 from database import (
     get_db,
@@ -12,6 +12,7 @@ from database import (
     Certificate,
     Experience,
     ContactMessage,
+    ContactInfo,
 )
 from models.schemas import (
     AboutContentResponse,
@@ -22,7 +23,9 @@ from models.schemas import (
     ExperienceResponse,
     ContactMessageBase,
     ContactMessageResponse,
+    ContactInfoResponse,
 )
+from services.email import send_contact_notification
 
 router = APIRouter(prefix="/api", tags=["public"])
 
@@ -37,13 +40,28 @@ async def get_about(db: AsyncSession = Depends(get_db)):
             bio="Profile not yet configured.",
             title="Portfolio",
             photo_url=None,
+            education=None,
+            focus_area=None,
+            subtitle=None,
+            linkedin_url=None,
+            github_url=None,
+            scholar_url=None,
+            extra_links=None,
+            cv_file_path=None,
+            project_display_count=6,
         )
     return about
 
 
 @router.get("/projects", response_model=List[ProjectResponse])
-async def get_projects(db: AsyncSession = Depends(get_db)):
-    result = await db.execute(select(Project).order_by(Project.order))
+async def get_projects(
+    limit: Optional[int] = Query(None, ge=1),
+    db: AsyncSession = Depends(get_db),
+):
+    query = select(Project).order_by(Project.order)
+    if limit is not None:
+        query = query.limit(limit)
+    result = await db.execute(query)
     return result.scalars().all()
 
 
@@ -82,7 +100,9 @@ async def get_experiences(db: AsyncSession = Depends(get_db)):
 
 @router.post("/contact", response_model=ContactMessageResponse)
 async def create_contact_message(
-    data: ContactMessageBase, db: AsyncSession = Depends(get_db)
+    data: ContactMessageBase,
+    background_tasks: BackgroundTasks,
+    db: AsyncSession = Depends(get_db),
 ):
     message = ContactMessage(
         name=data.name,
@@ -92,4 +112,36 @@ async def create_contact_message(
     db.add(message)
     await db.commit()
     await db.refresh(message)
+
+    # Read notification emails from DB (if configured by admin)
+    result = await db.execute(select(ContactInfo))
+    contact_info = result.scalar_one_or_none()
+    notification_emails_from_db = (
+        contact_info.notification_emails if contact_info else None
+    )
+
+    # Send email notification in background (non-blocking, best-effort)
+    background_tasks.add_task(
+        send_contact_notification,
+        sender_name=data.name,
+        sender_email=data.email,
+        message=data.message,
+        notification_emails_from_db=notification_emails_from_db,
+    )
+
     return message
+
+
+@router.get("/contact-info", response_model=ContactInfoResponse)
+async def get_contact_info(db: AsyncSession = Depends(get_db)):
+    result = await db.execute(select(ContactInfo))
+    info = result.scalar_one_or_none()
+    if info is None:
+        return ContactInfoResponse(
+            id=0,
+            email=None,
+            phone=None,
+            address=None,
+            notification_emails=None,
+        )
+    return info

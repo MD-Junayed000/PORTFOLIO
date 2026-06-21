@@ -3,6 +3,29 @@ export interface About {
   bio: string;
   title: string;
   photo_url: string | null;
+  education: string | null;
+  focus_area: string | null;
+  subtitle: string | null;
+  linkedin_url: string | null;
+  github_url: string | null;
+  scholar_url: string | null;
+  extra_links: string | null; // JSON string of [{name, url, icon}]
+  cv_file_path: string | null;
+  project_display_count: number | null;
+}
+
+export interface ExtraLink {
+  name: string;
+  url: string;
+  icon?: string;
+}
+
+export interface ContactInfo {
+  id: number;
+  email: string | null;
+  phone: string | null;
+  address: string | null;
+  notification_emails: string | null;
 }
 
 export interface Project {
@@ -62,6 +85,7 @@ export interface Experience {
   organization: string;
   period: string;
   description: string | null;
+  logo_url: string | null;
   order: number;
 }
 

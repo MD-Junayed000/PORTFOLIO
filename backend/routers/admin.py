@@ -16,12 +16,14 @@ from database import (
     Experience,
     ContactMessage,
     Document,
+    ContactInfo,
 )
 from models.schemas import (
     AboutContentBase,
     AboutContentResponse,
     ProjectBase,
     ProjectResponse,
+    ProjectReorderRequest,
     SkillBase,
     SkillResponse,
     ResearchBase,
@@ -34,6 +36,8 @@ from models.schemas import (
     DocumentBase,
     DocumentResponse,
     AdminSettings,
+    ContactInfoBase,
+    ContactInfoResponse,
 )
 from routers.auth import get_current_admin
 from services.vector_store import process_pdf, delete_document
@@ -45,6 +49,9 @@ UPLOAD_DIR = "./uploads"
 
 # Allowed image MIME types for photo uploads
 ALLOWED_IMAGE_TYPES = {"image/jpeg", "image/png", "image/gif", "image/webp"}
+
+# Allowed MIME types for certificate file uploads
+ALLOWED_CERT_TYPES = {"image/jpeg", "image/png", "image/gif", "image/webp", "application/pdf"}
 
 
 # About
@@ -112,6 +119,26 @@ async def delete_project(
     await db.delete(project)
     await db.commit()
     return {"detail": "Project deleted"}
+
+
+@router.post("/projects/reorder")
+async def reorder_projects(
+    data: ProjectReorderRequest,
+    db: AsyncSession = Depends(get_db),
+    admin: dict = Depends(get_current_admin),
+):
+    # Fetch all relevant projects in a single query to avoid N+1
+    project_ids = [item.id for item in data.projects]
+    result = await db.execute(select(Project).where(Project.id.in_(project_ids)))
+    projects_map = {p.id: p for p in result.scalars().all()}
+
+    for item in data.projects:
+        project = projects_map.get(item.id)
+        if project:
+            project.order = item.order
+
+    await db.commit()
+    return {"detail": "Projects reordered"}
 
 
 # Skills
@@ -288,6 +315,88 @@ async def upload_photo(
     with open(file_path, "wb") as f:
         f.write(content)
     return {"photo_url": f"/uploads/{safe_filename}"}
+
+
+@router.post("/upload-cv")
+async def upload_cv(
+    file: UploadFile = File(...),
+    admin: dict = Depends(get_current_admin),
+):
+    if not file.filename or not file.filename.lower().endswith(".pdf"):
+        raise HTTPException(status_code=400, detail="Only PDF files are accepted")
+
+    os.makedirs(UPLOAD_DIR, exist_ok=True)
+
+    # Read file content with size limit
+    content = await file.read()
+    if len(content) > settings.MAX_PDF_SIZE:
+        raise HTTPException(
+            status_code=400,
+            detail=f"File too large. Maximum size is {settings.MAX_PDF_SIZE // (1024 * 1024)} MB",
+        )
+
+    # Generate a safe UUID-based filename
+    safe_filename = f"cv_{uuid.uuid4().hex}.pdf"
+    file_path = os.path.join(UPLOAD_DIR, safe_filename)
+
+    with open(file_path, "wb") as f:
+        f.write(content)
+
+    return {"cv_url": f"/uploads/{safe_filename}", "filename": safe_filename}
+
+
+@router.delete("/cv")
+async def delete_cv(
+    db: AsyncSession = Depends(get_db),
+    admin: dict = Depends(get_current_admin),
+):
+    result = await db.execute(select(AboutContent))
+    about = result.scalar_one_or_none()
+    if about is None or not about.cv_file_path:
+        raise HTTPException(status_code=404, detail="No CV file found")
+
+    # Delete file from disk
+    file_path = os.path.join(UPLOAD_DIR, os.path.basename(about.cv_file_path))
+    if os.path.exists(file_path):
+        os.remove(file_path)
+
+    about.cv_file_path = None
+    await db.commit()
+    return {"detail": "CV deleted"}
+
+
+@router.post("/upload-certificate")
+async def upload_certificate(
+    file: UploadFile = File(...),
+    admin: dict = Depends(get_current_admin),
+):
+    # Validate content type
+    if file.content_type not in ALLOWED_CERT_TYPES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid file type. Allowed: images and PDF",
+        )
+
+    os.makedirs(UPLOAD_DIR, exist_ok=True)
+
+    # Read file content with size limit
+    content = await file.read()
+    if len(content) > settings.MAX_PDF_SIZE:
+        raise HTTPException(
+            status_code=400,
+            detail=f"File too large. Maximum size is {settings.MAX_PDF_SIZE // (1024 * 1024)} MB",
+        )
+
+    # Generate a safe UUID-based filename
+    ext = os.path.splitext(file.filename or "cert.jpg")[1].lower()
+    if ext not in (".jpg", ".jpeg", ".png", ".gif", ".webp", ".pdf"):
+        ext = ".jpg"
+    safe_filename = f"cert_{uuid.uuid4().hex}{ext}"
+    file_path = os.path.join(UPLOAD_DIR, safe_filename)
+
+    with open(file_path, "wb") as f:
+        f.write(content)
+    return {"file_url": f"/uploads/{safe_filename}"}
 
 
 @router.post("/upload-pdf")
@@ -471,6 +580,44 @@ async def delete_message(
     await db.delete(message)
     await db.commit()
     return {"detail": "Message deleted"}
+
+
+# Contact Info
+@router.get("/contact-info", response_model=ContactInfoResponse)
+async def get_admin_contact_info(
+    db: AsyncSession = Depends(get_db),
+    admin: dict = Depends(get_current_admin),
+):
+    result = await db.execute(select(ContactInfo))
+    info = result.scalar_one_or_none()
+    if info is None:
+        return ContactInfoResponse(
+            id=0,
+            email=None,
+            phone=None,
+            address=None,
+            notification_emails=None,
+        )
+    return info
+
+
+@router.put("/contact-info", response_model=ContactInfoResponse)
+async def update_contact_info(
+    data: ContactInfoBase,
+    db: AsyncSession = Depends(get_db),
+    admin: dict = Depends(get_current_admin),
+):
+    result = await db.execute(select(ContactInfo))
+    info = result.scalar_one_or_none()
+    if info is None:
+        info = ContactInfo(**data.model_dump())
+        db.add(info)
+    else:
+        for key, value in data.model_dump().items():
+            setattr(info, key, value)
+    await db.commit()
+    await db.refresh(info)
+    return info
 
 
 # Settings

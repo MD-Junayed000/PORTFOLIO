@@ -12,7 +12,7 @@ interface SkillForm {
   proficiency: number;
 }
 
-const emptyForm: SkillForm = { category: "", name: "", proficiency: 75 };
+const emptyForm: SkillForm = { category: "", name: "", proficiency: 80 };
 
 export default function AdminSkills() {
   const [skills, setSkills] = useState<Skill[]>([]);
@@ -126,7 +126,7 @@ export default function AdminSkills() {
             </button>
           </div>
           <form onSubmit={handleSubmit} className="space-y-4">
-            <div className="grid sm:grid-cols-3 gap-4">
+            <div className="grid sm:grid-cols-2 gap-4">
               <div>
                 <label className="block text-sm text-muted mb-1">
                   Category
@@ -151,24 +151,6 @@ export default function AdminSkills() {
                   className="w-full bg-background border border-border rounded-lg px-3 py-2 text-sm text-foreground focus:outline-none focus:border-primary"
                   placeholder="e.g. PyTorch"
                   required
-                />
-              </div>
-              <div>
-                <label className="block text-sm text-muted mb-1">
-                  Proficiency (%)
-                </label>
-                <input
-                  type="number"
-                  min="0"
-                  max="100"
-                  value={form.proficiency}
-                  onChange={(e) =>
-                    setForm({
-                      ...form,
-                      proficiency: parseInt(e.target.value) || 0,
-                    })
-                  }
-                  className="w-full bg-background border border-border rounded-lg px-3 py-2 text-sm text-foreground focus:outline-none focus:border-primary"
                 />
               </div>
             </div>
@@ -198,9 +180,6 @@ export default function AdminSkills() {
                 >
                   <div className="flex items-center gap-3">
                     <span className="text-sm text-foreground">{skill.name}</span>
-                    <span className="text-xs text-muted">
-                      {skill.proficiency}%
-                    </span>
                   </div>
                   <div className="flex items-center gap-2">
                     <button

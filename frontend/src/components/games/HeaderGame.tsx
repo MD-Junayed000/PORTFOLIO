@@ -19,17 +19,28 @@ interface Obstacle {
   label: string;
 }
 
-const ENEMY_COLORS = ["#47d147", "#68a063", "#dc382c", "#777bb3"];
-const ENEMY_LABELS = ["Nginx", "Node", "Redis", "PHP"];
-const GRAVITY = 0.6;
-const JUMP_FORCE = -10;
+const ENEMY_CONFIGS = [
+  { label: "nginx", color: "#009639" },
+  { label: "PHP", color: "#777BB4" },
+  { label: "Redis", color: "#DC382D" },
+  { label: "Kafka", color: "#231F20" },
+  { label: "GPT", color: "#10A37F" },
+  { label: "Gemini", color: "#4285F4" },
+  { label: "AWS", color: "#FF9900" },
+  { label: "Docker", color: "#2496ED" },
+  { label: "Node", color: "#68A063" },
+  { label: "Go", color: "#00ADD8" },
+];
+
+const GRAVITY = 0.55;
+const JUMP_FORCE = -10.5;
 const GROUND_OFFSET = 30;
 const GAME_SPEED = 3;
 
 export default function HeaderGame() {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const animRef = useRef<number>(0);
-  const playerRef = useRef<Entity>({ x: 40, y: 0, vy: 0, width: 20, height: 20 });
+  const playerRef = useRef<Entity>({ x: 40, y: 0, vy: 0, width: 22, height: 22 });
   const obstaclesRef = useRef<Obstacle[]>([]);
   const frameRef = useRef(0);
   const scoreRef = useRef(0);
@@ -41,7 +52,7 @@ export default function HeaderGame() {
     const canvas = canvasRef.current;
     if (!canvas) return;
     const ground = canvas.height - GROUND_OFFSET;
-    playerRef.current = { x: 40, y: ground - 20, vy: 0, width: 20, height: 20 };
+    playerRef.current = { x: 40, y: ground - 22, vy: 0, width: 22, height: 22 };
     obstaclesRef.current = [];
     frameRef.current = 0;
     scoreRef.current = 0;
@@ -64,6 +75,34 @@ export default function HeaderGame() {
     }
   }, [resetGame]);
 
+  // Keyboard event listener for spacebar - scoped to game container focus
+  useEffect(() => {
+    const container = canvasRef.current?.parentElement;
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.code === "Space" || e.key === " ") {
+        // Only handle space when the game container (or its children) is focused
+        if (container && container.contains(document.activeElement as Node)) {
+          e.preventDefault();
+          jump();
+        }
+      }
+    };
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [jump]);
+
+  // Touch event listener for mobile
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const handleTouch = (e: TouchEvent) => {
+      e.preventDefault();
+      jump();
+    };
+    canvas.addEventListener("touchstart", handleTouch, { passive: false });
+    return () => canvas.removeEventListener("touchstart", handleTouch);
+  }, [jump]);
+
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
@@ -81,7 +120,60 @@ export default function HeaderGame() {
     window.addEventListener("resize", resizeCanvas);
 
     const ground = canvas.height - GROUND_OFFSET;
-    playerRef.current.y = ground - 20;
+    playerRef.current.y = ground - 22;
+
+    const drawPlayer = (ctx: CanvasRenderingContext2D, x: number, y: number, width: number, height: number) => {
+      // Claude-inspired player: rounded coral/orange shape
+      const cx = x + width / 2;
+      const cy = y + height / 2;
+      const radius = width / 2;
+
+      // Main body - rounded coral shape
+      ctx.beginPath();
+      ctx.ellipse(cx, cy, radius, radius * 0.9, 0, 0, Math.PI * 2);
+      ctx.fillStyle = "#E8733A";
+      ctx.fill();
+
+      // Inner highlight
+      ctx.beginPath();
+      ctx.ellipse(cx - 2, cy - 2, radius * 0.6, radius * 0.5, -0.3, 0, Math.PI * 2);
+      ctx.fillStyle = "#F4A261";
+      ctx.fill();
+
+      // Small dot eyes
+      ctx.fillStyle = "#FFFFFF";
+      ctx.beginPath();
+      ctx.arc(cx - 3, cy - 2, 2, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.beginPath();
+      ctx.arc(cx + 3, cy - 2, 2, 0, Math.PI * 2);
+      ctx.fill();
+    };
+
+    const drawEnemy = (ctx: CanvasRenderingContext2D, obs: Obstacle) => {
+      // Rounded rectangle with brand color
+      const r = 3;
+      ctx.beginPath();
+      ctx.moveTo(obs.x + r, obs.y);
+      ctx.lineTo(obs.x + obs.width - r, obs.y);
+      ctx.quadraticCurveTo(obs.x + obs.width, obs.y, obs.x + obs.width, obs.y + r);
+      ctx.lineTo(obs.x + obs.width, obs.y + obs.height - r);
+      ctx.quadraticCurveTo(obs.x + obs.width, obs.y + obs.height, obs.x + obs.width - r, obs.y + obs.height);
+      ctx.lineTo(obs.x + r, obs.y + obs.height);
+      ctx.quadraticCurveTo(obs.x, obs.y + obs.height, obs.x, obs.y + obs.height - r);
+      ctx.lineTo(obs.x, obs.y + r);
+      ctx.quadraticCurveTo(obs.x, obs.y, obs.x + r, obs.y);
+      ctx.closePath();
+      ctx.fillStyle = obs.color;
+      ctx.fill();
+
+      // Label text
+      ctx.fillStyle = "#ffffff";
+      ctx.font = "bold 6px sans-serif";
+      ctx.textAlign = "center";
+      ctx.textBaseline = "middle";
+      ctx.fillText(obs.label, obs.x + obs.width / 2, obs.y + obs.height / 2);
+    };
 
     const gameLoop = () => {
       if (!canvas || !ctx) return;
@@ -110,15 +202,17 @@ export default function HeaderGame() {
 
         // Spawn obstacles
         frameRef.current++;
-        if (frameRef.current % 90 === 0) {
-          const idx = Math.floor(Math.random() * ENEMY_LABELS.length);
+        if (frameRef.current % 85 === 0) {
+          const idx = Math.floor(Math.random() * ENEMY_CONFIGS.length);
+          const config = ENEMY_CONFIGS[idx];
+          const labelWidth = Math.max(config.label.length * 5 + 8, 22);
           obstaclesRef.current.push({
             x: width,
             y: groundY - 18,
-            width: 18,
+            width: labelWidth,
             height: 18,
-            color: ENEMY_COLORS[idx],
-            label: ENEMY_LABELS[idx],
+            color: config.color,
+            label: config.label,
           });
         }
 
@@ -150,44 +244,28 @@ export default function HeaderGame() {
           }
         }
 
-        // Draw player (sparkle/asterisk shape)
-        ctx.fillStyle = "#d97706";
-        const px = player.x + player.width / 2;
-        const py = player.y + player.height / 2;
-        ctx.beginPath();
-        for (let i = 0; i < 8; i++) {
-          const angle = (i * Math.PI) / 4;
-          const r = i % 2 === 0 ? 10 : 5;
-          const sx = px + Math.cos(angle) * r;
-          const sy = py + Math.sin(angle) * r;
-          if (i === 0) ctx.moveTo(sx, sy);
-          else ctx.lineTo(sx, sy);
-        }
-        ctx.closePath();
-        ctx.fill();
+        // Draw player (Claude-inspired icon)
+        drawPlayer(ctx, player.x, player.y, player.width, player.height);
 
-        // Draw obstacles
+        // Draw obstacles (tech brand enemies)
         for (const obs of obstaclesRef.current) {
-          ctx.fillStyle = obs.color;
-          ctx.fillRect(obs.x, obs.y, obs.width, obs.height);
-          ctx.fillStyle = "#ffffff";
-          ctx.font = "bold 7px sans-serif";
-          ctx.textAlign = "center";
-          ctx.fillText(obs.label[0], obs.x + obs.width / 2, obs.y + obs.height / 2 + 3);
+          drawEnemy(ctx, obs);
         }
       } else {
         // Game over state
         ctx.fillStyle = "#6b7280";
         ctx.font = "12px sans-serif";
         ctx.textAlign = "center";
-        ctx.fillText("Game Over! Click to restart", width / 2, height / 2);
+        ctx.textBaseline = "middle";
+        ctx.fillText("Game Over! Click or press Space to restart", width / 2, height / 2);
       }
 
       // Draw score
       ctx.fillStyle = "#6b7280";
       ctx.font = "10px sans-serif";
       ctx.textAlign = "right";
-      ctx.fillText(`Score: ${Math.floor(scoreRef.current / 10)}`, width - 10, 14);
+      ctx.textBaseline = "top";
+      ctx.fillText(`Score: ${Math.floor(scoreRef.current / 10)}`, width - 10, 4);
 
       animRef.current = requestAnimationFrame(gameLoop);
     };
@@ -201,11 +279,17 @@ export default function HeaderGame() {
   }, []);
 
   return (
-    <div className="w-full h-20 relative cursor-pointer select-none" onClick={jump} onKeyDown={(e) => e.key === " " && jump()} tabIndex={0}>
+    <div
+      className="w-full h-20 relative cursor-pointer select-none outline-none"
+      onClick={jump}
+      tabIndex={0}
+      role="button"
+      aria-label="Jump game - click or press spacebar to jump"
+    >
       <canvas ref={canvasRef} className="w-full h-full block" />
       {!gameOver && score === 0 && (
         <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
-          <span className="text-xs text-muted/60">Click to jump!</span>
+          <span className="text-xs text-muted/60">Click or press Space to jump!</span>
         </div>
       )}
     </div>

@@ -1,11 +1,12 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { motion } from "framer-motion";
-import { Mail, Phone, Send, BookOpen } from "lucide-react";
+import { Mail, Phone, Send, MapPin } from "lucide-react";
 import { GithubIcon, LinkedinIcon, GoogleScholarIcon } from "@/components/icons";
 import api from "@/lib/api";
 import toast from "react-hot-toast";
+import { ContactInfo, About } from "@/types";
 
 export default function Contact() {
   const [formData, setFormData] = useState({
@@ -14,6 +15,19 @@ export default function Contact() {
     message: "",
   });
   const [sending, setSending] = useState(false);
+  const [contactInfo, setContactInfo] = useState<ContactInfo | null>(null);
+  const [about, setAbout] = useState<About | null>(null);
+
+  useEffect(() => {
+    api
+      .get("/api/contact-info")
+      .then((res) => setContactInfo(res.data))
+      .catch(() => {});
+    api
+      .get("/api/about")
+      .then((res) => setAbout(res.data))
+      .catch(() => {});
+  }, []);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -32,6 +46,17 @@ export default function Contact() {
       setSending(false);
     }
   };
+
+  const displayEmail = contactInfo?.email || "mdjunayed573@gmail.com";
+  const displayPhone = contactInfo?.phone || "+880 1876220119";
+  const displayAddress = contactInfo?.address;
+
+  const githubUrl = about?.github_url || "https://github.com/MD-Junayed000";
+  const linkedinUrl =
+    about?.linkedin_url || "https://www.linkedin.com/in/muhammad-junayed-ete20/";
+  const scholarUrl =
+    about?.scholar_url ||
+    "https://scholar.google.com/citations?user=wObQzNsAAAAJ&hl=en";
 
   return (
     <section id="contact" className="py-20">
@@ -121,7 +146,7 @@ export default function Contact() {
                 </h3>
                 <div className="space-y-4">
                   <a
-                    href="mailto:mdjunayed573@gmail.com"
+                    href={`mailto:${displayEmail}`}
                     className="flex items-center gap-3 text-muted hover:text-primary transition-colors group"
                   >
                     <div className="p-2 bg-background border border-border rounded-lg group-hover:border-primary/50 transition-colors">
@@ -129,11 +154,11 @@ export default function Contact() {
                     </div>
                     <div>
                       <p className="text-xs text-muted">Email</p>
-                      <p className="text-sm text-foreground">mdjunayed573@gmail.com</p>
+                      <p className="text-sm text-foreground">{displayEmail}</p>
                     </div>
                   </a>
                   <a
-                    href="tel:+8801876220119"
+                    href={`tel:${displayPhone.replace(/\s/g, "")}`}
                     className="flex items-center gap-3 text-muted hover:text-primary transition-colors group"
                   >
                     <div className="p-2 bg-background border border-border rounded-lg group-hover:border-primary/50 transition-colors">
@@ -141,9 +166,20 @@ export default function Contact() {
                     </div>
                     <div>
                       <p className="text-xs text-muted">Phone</p>
-                      <p className="text-sm text-foreground">+880 1876220119</p>
+                      <p className="text-sm text-foreground">{displayPhone}</p>
                     </div>
                   </a>
+                  {displayAddress && (
+                    <div className="flex items-center gap-3 text-muted group">
+                      <div className="p-2 bg-background border border-border rounded-lg transition-colors">
+                        <MapPin size={18} />
+                      </div>
+                      <div>
+                        <p className="text-xs text-muted">Address</p>
+                        <p className="text-sm text-foreground">{displayAddress}</p>
+                      </div>
+                    </div>
+                  )}
                 </div>
               </div>
 
@@ -154,7 +190,7 @@ export default function Contact() {
                 </h3>
                 <div className="flex items-center gap-3">
                   <a
-                    href="https://github.com/MD-Junayed000"
+                    href={githubUrl}
                     target="_blank"
                     rel="noopener noreferrer"
                     className="p-3 bg-background border border-border rounded-lg text-muted hover:text-primary hover:border-primary/50 transition-colors"
@@ -163,7 +199,7 @@ export default function Contact() {
                     <GithubIcon size={20} />
                   </a>
                   <a
-                    href="https://www.linkedin.com/in/muhammad-junayed-ete20/"
+                    href={linkedinUrl}
                     target="_blank"
                     rel="noopener noreferrer"
                     className="p-3 bg-background border border-border rounded-lg text-muted hover:text-primary hover:border-primary/50 transition-colors"
@@ -172,7 +208,7 @@ export default function Contact() {
                     <LinkedinIcon size={20} />
                   </a>
                   <a
-                    href="https://scholar.google.com/citations?user=wObQzNsAAAAJ&hl=en"
+                    href={scholarUrl}
                     target="_blank"
                     rel="noopener noreferrer"
                     className="p-3 bg-background border border-border rounded-lg text-muted hover:text-primary hover:border-primary/50 transition-colors"

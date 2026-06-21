@@ -1,5 +1,5 @@
 import { Mail } from "lucide-react";
-import { GithubIcon, LinkedinIcon } from "@/components/icons";
+import { GithubIcon, LinkedinIcon, KaggleIcon, GoogleScholarIcon } from "@/components/icons";
 
 export default function Footer() {
   return (
@@ -30,20 +30,29 @@ export default function Footer() {
               <LinkedinIcon size={18} />
             </a>
             <a
-              href="mailto:mdjunayed573@gmail.com"
+              href="https://scholar.google.com/citations?user=wObQzNsAAAAJ&hl=en"
+              target="_blank"
+              rel="noopener noreferrer"
               className="text-muted hover:text-foreground transition-colors"
-              aria-label="Email"
+              aria-label="Google Scholar"
             >
-              <Mail size={18} />
+              <GoogleScholarIcon size={18} />
             </a>
             <a
               href="https://www.kaggle.com/muhammedjunayed"
               target="_blank"
               rel="noopener noreferrer"
-              className="text-muted hover:text-foreground transition-colors text-sm font-medium"
+              className="text-muted hover:text-foreground transition-colors"
               aria-label="Kaggle"
             >
-              K
+              <KaggleIcon size={18} />
+            </a>
+            <a
+              href="mailto:mdjunayed573@gmail.com"
+              className="text-muted hover:text-foreground transition-colors"
+              aria-label="Email"
+            >
+              <Mail size={18} />
             </a>
           </div>
         </div>

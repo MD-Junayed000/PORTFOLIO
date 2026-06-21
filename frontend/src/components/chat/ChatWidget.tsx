@@ -2,7 +2,7 @@
 
 import { useState, useRef, useEffect } from "react";
 import { motion, AnimatePresence } from "framer-motion";
-import { MessageCircle, X, Send, Loader2, Sparkles } from "lucide-react";
+import { MessageCircle, X, Send, Loader2, Sparkles, RotateCcw } from "lucide-react";
 import api from "@/lib/api";
 import type { ChatMessage } from "@/types";
 
@@ -65,13 +65,23 @@ export default function ChatWidget() {
                   Ask about Junayed
                 </h3>
               </div>
-              <button
-                onClick={() => setIsOpen(false)}
-                className="text-muted hover:text-foreground transition-colors"
-                aria-label="Close chat"
-              >
-                <X size={18} />
-              </button>
+              <div className="flex items-center gap-1">
+                <button
+                  onClick={() => setMessages([])}
+                  className="text-muted hover:text-foreground transition-colors p-1 rounded"
+                  aria-label="New Chat"
+                  title="New Chat"
+                >
+                  <RotateCcw size={16} />
+                </button>
+                <button
+                  onClick={() => setIsOpen(false)}
+                  className="text-muted hover:text-foreground transition-colors p-1 rounded"
+                  aria-label="Close chat"
+                >
+                  <X size={18} />
+                </button>
+              </div>
             </div>
 
             {/* Messages */}
@@ -158,13 +168,21 @@ export default function ChatWidget() {
       </AnimatePresence>
 
       {/* Toggle button */}
-      <button
-        onClick={() => setIsOpen(!isOpen)}
-        className="w-14 h-14 bg-primary hover:bg-primary-hover text-white rounded-full shadow-lg flex items-center justify-center transition-all hover:scale-105"
-        aria-label="Ask about Junayed"
-      >
-        {isOpen ? <X size={22} /> : <MessageCircle size={22} />}
-      </button>
+      <div className="relative group">
+        <button
+          onClick={() => setIsOpen(!isOpen)}
+          className="w-14 h-14 bg-primary hover:bg-primary-hover text-white rounded-full shadow-lg flex items-center justify-center transition-all hover:scale-105"
+          aria-label="Ask about Junayed"
+          title="Ask about Junayed"
+        >
+          {isOpen ? <X size={22} /> : <MessageCircle size={22} />}
+        </button>
+        {!isOpen && (
+          <span className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 px-3 py-1.5 text-xs font-medium text-white bg-gray-800 rounded-lg opacity-0 group-hover:opacity-100 transition-opacity whitespace-nowrap pointer-events-none">
+            Ask about Junayed
+          </span>
+        )}
+      </div>
     </div>
   );
 }

@@ -1,0 +1,32 @@
+{
+  "id": "FEAT-006",
+  "type": "fix",
+  "description": "Address 7 issues from semantic review: HTML injection in email, synchronous SMTP blocking async, notification_emails unused, project display count client-only, global keyboard listener, reorder N+1, and missing column migration.",
+  "status": "completed",
+  "steps": [
+    "1. Fix HTML injection in email.py: escape sender_name, sender_email, and message with html.escape() before interpolation into HTML template.",
+    "2. Fix synchronous SMTP: use asyncio.to_thread to run send_contact_notification in a background thread, and use BackgroundTasks in the contact endpoint.",
+    "3. Wire notification_emails from DB: modify send_contact_notification call to read ContactInfo.notification_emails and use those as recipients.",
+    "4. Make project display count server-side: add project_display_count field to AboutContent model, expose via API, read in frontend Projects.tsx from API instead of localStorage.",
+    "5. Scope keyboard listener in HeaderGame: only handle Space when the game container is focused (check document.activeElement).",
+    "6. Fix reorder endpoint N+1: fetch all projects in a single query, update orders in bulk.",
+    "7. Add auto-migration in database.py: after create_all, inspect existing tables and ALTER TABLE to add missing columns for SQLite."
+  ],
+  "acceptance_criteria": [
+    "Email template uses html.escape() for user inputs",
+    "SMTP send runs in a background task, not blocking the response",
+    "notification_emails from DB are used as recipients when available",
+    "project_display_count is stored server-side and read from API",
+    "Space key only triggers jump when game container is focused",
+    "Reorder endpoint uses a single SELECT for all projects",
+    "Database startup adds missing columns to existing tables",
+    "Frontend build passes",
+    "Backend tests pass"
+  ],
+  "verification": [
+    "cd /projects/sandbox/PORTFOLIO/backend && TESTING=true SECRET_KEY=test-key python -m pytest tests/ -v",
+    "cd /projects/sandbox/PORTFOLIO/frontend && npm run build"
+  ],
+  "blocked_reason": null,
+  "findings": "All 7 review issues fixed. Backend 17/17 tests pass. Frontend build succeeds (16 static pages). The auto-migration approach uses SQLAlchemy inspector to detect missing columns and issues ALTER TABLE statements. The email service is now fully async via asyncio.to_thread and uses BackgroundTasks. The project display count is now persisted in the AboutContent table and read from the /api/about endpoint by both the public Projects component and the admin projects page."
+}

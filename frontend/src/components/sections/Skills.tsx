@@ -15,19 +15,13 @@ export default function Skills() {
       .catch(() => {});
   }, []);
 
-  // Group by category
-  const grouped = skills.reduce(
-    (acc, skill) => {
-      const cat = skill.category;
-      if (!acc[cat]) acc[cat] = [];
-      acc[cat].push(skill);
-      return acc;
-    },
-    {} as Record<string, Skill[]>
-  );
+  // Split skills into two roughly equal rows
+  const midpoint = Math.ceil(skills.length / 2);
+  const row1 = skills.slice(0, midpoint);
+  const row2 = skills.slice(midpoint);
 
   return (
-    <section id="skills" className="py-20">
+    <section id="skills" className="py-20 overflow-hidden">
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
         <motion.div
           initial={{ opacity: 0, y: 20 }}
@@ -39,40 +33,68 @@ export default function Skills() {
             Skills
           </h2>
 
-          <div className="grid md:grid-cols-2 lg:grid-cols-3 gap-8">
-            {Object.entries(grouped).map(([category, items]) => (
-              <div
-                key={category}
-                className="bg-surface border border-border rounded-lg p-6"
-              >
-                <h3 className="text-sm font-semibold text-primary uppercase tracking-wider mb-4">
-                  {category}
-                </h3>
-                <div className="space-y-3">
-                  {items.map((skill) => (
-                    <div key={skill.id}>
-                      <div className="flex items-center justify-between mb-1">
-                        <span className="text-sm text-foreground">
-                          {skill.name}
-                        </span>
-                        <span className="text-xs text-muted">
-                          {skill.proficiency}%
-                        </span>
-                      </div>
-                      <div className="w-full h-1.5 bg-background rounded-full overflow-hidden">
-                        <div
-                          className="h-full bg-primary rounded-full transition-all duration-500"
-                          style={{ width: `${skill.proficiency}%` }}
-                        />
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            ))}
+          <div className="space-y-4">
+            {/* Row 1: scrolls right-to-left */}
+            <MarqueeRow skills={row1} direction="left" />
+
+            {/* Row 2: scrolls left-to-right */}
+            <MarqueeRow skills={row2} direction="right" />
           </div>
+
+          <p className="text-center text-muted text-sm mt-8">
+            Technical skills I acquired or familiar with.
+          </p>
         </motion.div>
       </div>
     </section>
+  );
+}
+
+function MarqueeRow({
+  skills,
+  direction,
+}: {
+  skills: Skill[];
+  direction: "left" | "right";
+}) {
+  if (skills.length === 0) return null;
+
+  const animationDirection = direction === "left" ? "normal" : "reverse";
+
+  return (
+    <div className="relative overflow-hidden group">
+      <div
+        className="flex gap-3 w-max"
+        style={{
+          animation: `marquee-scroll 35s linear infinite`,
+          animationDirection,
+          willChange: "transform",
+        }}
+      >
+        {/* Render the list twice for seamless infinite scroll */}
+        {[...skills, ...skills].map((skill, index) => (
+          <span
+            key={`${skill.id}-${index}`}
+            className="inline-flex items-center px-4 py-2 bg-surface border border-border rounded-full text-sm text-foreground whitespace-nowrap hover:border-primary hover:text-primary transition-colors"
+          >
+            {skill.name}
+          </span>
+        ))}
+      </div>
+
+      <style jsx>{`
+        @keyframes marquee-scroll {
+          from {
+            transform: translateX(0);
+          }
+          to {
+            transform: translateX(-50%);
+          }
+        }
+        .group:hover div {
+          animation-play-state: paused;
+        }
+      `}</style>
+    </div>
   );
 }
