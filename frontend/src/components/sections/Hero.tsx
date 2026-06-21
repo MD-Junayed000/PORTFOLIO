@@ -34,7 +34,7 @@ export default function Hero() {
           className="flex flex-col items-center"
         >
           {/* Profile Image */}
-          <div className="relative w-32 h-32 sm:w-40 sm:h-40 mb-6 rounded-full overflow-hidden border-4 border-primary/20 shadow-lg">
+          <div className="relative w-40 h-40 sm:w-52 sm:h-52 mb-6 rounded-full overflow-hidden border-4 border-primary/20 shadow-lg">
             <Image
               src="/images/profile.png"
               alt="Muhammad Junayed"

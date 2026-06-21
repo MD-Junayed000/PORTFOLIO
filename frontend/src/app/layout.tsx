@@ -26,7 +26,8 @@ export const metadata: Metadata = {
     "Muhammad Junayed",
   ],
   icons: {
-    icon: "/images/icon.png",
+    icon: [{ url: "/images/icon.png", type: "image/png" }],
+    apple: "/images/icon.png",
   },
 };
 

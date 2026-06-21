@@ -1,7 +1,7 @@
 "use client";
 
-import { useEffect, useState } from "react";
-import { Plus, Pencil, Trash2, Loader2, X } from "lucide-react";
+import { useEffect, useState, useRef } from "react";
+import { Plus, Pencil, Trash2, Loader2, X, Upload } from "lucide-react";
 import api from "@/lib/api";
 import toast from "react-hot-toast";
 import type { Project } from "@/types";
@@ -33,6 +33,28 @@ export default function AdminProjects() {
   const [editingId, setEditingId] = useState<number | null>(null);
   const [form, setForm] = useState<ProjectForm>(emptyForm);
   const [saving, setSaving] = useState(false);
+  const [uploading, setUploading] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
+  const handleImageUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setUploading(true);
+    try {
+      const formData = new FormData();
+      formData.append("file", file);
+      const res = await api.post("/api/admin/upload-photo", formData, {
+        headers: { "Content-Type": "multipart/form-data" },
+      });
+      setForm({ ...form, image_url: res.data.photo_url });
+      toast.success("Image uploaded");
+    } catch {
+      toast.error("Upload failed");
+    } finally {
+      setUploading(false);
+      if (fileInputRef.current) fileInputRef.current.value = "";
+    }
+  };
 
   const fetchProjects = () => {
     api
@@ -175,15 +197,37 @@ export default function AdminProjects() {
               <label className="block text-sm text-muted mb-1">
                 Image URL
               </label>
-              <input
-                type="url"
-                value={form.image_url}
-                onChange={(e) =>
-                  setForm({ ...form, image_url: e.target.value })
-                }
-                className="w-full bg-background border border-border rounded-lg px-3 py-2 text-sm text-foreground focus:outline-none focus:border-primary"
-                placeholder="https://..."
-              />
+              <div className="flex items-center gap-2">
+                <input
+                  type="url"
+                  value={form.image_url}
+                  onChange={(e) =>
+                    setForm({ ...form, image_url: e.target.value })
+                  }
+                  className="flex-1 bg-background border border-border rounded-lg px-3 py-2 text-sm text-foreground focus:outline-none focus:border-primary"
+                  placeholder="https://..."
+                />
+                <input
+                  ref={fileInputRef}
+                  type="file"
+                  accept="image/*"
+                  onChange={handleImageUpload}
+                  className="hidden"
+                />
+                <button
+                  type="button"
+                  onClick={() => fileInputRef.current?.click()}
+                  disabled={uploading}
+                  className="inline-flex items-center gap-1 px-3 py-2 bg-background border border-border rounded-lg text-sm text-muted hover:text-foreground hover:border-primary/50 transition-colors disabled:opacity-50"
+                >
+                  {uploading ? (
+                    <Loader2 size={14} className="animate-spin" />
+                  ) : (
+                    <Upload size={14} />
+                  )}
+                  Upload
+                </button>
+              </div>
             </div>
             <div className="grid sm:grid-cols-3 gap-4">
               <div>

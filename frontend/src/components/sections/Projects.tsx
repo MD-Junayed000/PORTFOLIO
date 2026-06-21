@@ -8,6 +8,18 @@ import Image from "next/image";
 import api from "@/lib/api";
 import type { Project } from "@/types";
 
+function getImageUrl(url: string): string {
+  // Convert GitHub blob URLs to raw.githubusercontent.com URLs
+  const blobMatch = url.match(
+    /^https?:\/\/github\.com\/([^/]+)\/([^/]+)\/blob\/(.+)$/
+  );
+  if (blobMatch) {
+    const [, user, repo, path] = blobMatch;
+    return `https://raw.githubusercontent.com/${user}/${repo}/${path}`;
+  }
+  return url;
+}
+
 export default function Projects() {
   const [projects, setProjects] = useState<Project[]>([]);
   const [filter, setFilter] = useState<string>("All");
@@ -84,7 +96,7 @@ export default function Projects() {
                 {project.image_url && (
                   <div className="relative h-40 bg-surface-hover overflow-hidden">
                     <Image
-                      src={project.image_url}
+                      src={getImageUrl(project.image_url)}
                       alt={project.name}
                       fill
                       className="object-cover group-hover:scale-105 transition-transform duration-300"
