@@ -28,6 +28,7 @@ class AboutContent(Base):
     scholar_url = Column(String(500), nullable=True)
     extra_links = Column(Text, nullable=True)  # JSON string of [{name, url, icon}]
     cv_file_path = Column(String(500), nullable=True)
+    project_display_count = Column(Integer, nullable=True, default=6)
 
 
 class Project(Base):
@@ -118,6 +119,48 @@ class Document(Base):
 async def init_db():
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+        # Auto-migrate: add missing columns to existing tables (SQLite only)
+        await conn.run_sync(_add_missing_columns)
+
+
+def _add_missing_columns(conn):
+    """Inspect existing tables and add any missing columns via ALTER TABLE.
+
+    SQLAlchemy's create_all() only creates new tables; it does not add new
+    columns to existing ones. This function bridges that gap for SQLite
+    deployments that do not use Alembic.
+    """
+    from sqlalchemy import inspect as sa_inspect, text as sa_text
+
+    inspector = sa_inspect(conn)
+    for table in Base.metadata.sorted_tables:
+        if not inspector.has_table(table.name):
+            continue  # Table will be created by create_all
+
+        existing_columns = {col["name"] for col in inspector.get_columns(table.name)}
+        for column in table.columns:
+            if column.name not in existing_columns:
+                # Build column type string
+                col_type = column.type.compile(conn.dialect)
+                nullable = "NULL" if column.nullable else "NOT NULL"
+                default_clause = ""
+                if column.default is not None:
+                    default_val = column.default.arg
+                    if callable(default_val):
+                        default_clause = ""  # Skip callable defaults
+                    elif isinstance(default_val, str):
+                        default_clause = f" DEFAULT '{default_val}'"
+                    else:
+                        default_clause = f" DEFAULT {default_val}"
+
+                alter_sql = (
+                    f'ALTER TABLE "{table.name}" ADD COLUMN "{column.name}" '
+                    f"{col_type} {nullable}{default_clause}"
+                )
+                try:
+                    conn.execute(sa_text(alter_sql))
+                except Exception:
+                    pass  # Column may already exist in a concurrent scenario
 
 
 async def get_db():

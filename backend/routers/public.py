@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, BackgroundTasks, Depends, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from typing import List, Optional
@@ -48,6 +48,7 @@ async def get_about(db: AsyncSession = Depends(get_db)):
             scholar_url=None,
             extra_links=None,
             cv_file_path=None,
+            project_display_count=6,
         )
     return about
 
@@ -99,7 +100,9 @@ async def get_experiences(db: AsyncSession = Depends(get_db)):
 
 @router.post("/contact", response_model=ContactMessageResponse)
 async def create_contact_message(
-    data: ContactMessageBase, db: AsyncSession = Depends(get_db)
+    data: ContactMessageBase,
+    background_tasks: BackgroundTasks,
+    db: AsyncSession = Depends(get_db),
 ):
     message = ContactMessage(
         name=data.name,
@@ -110,11 +113,20 @@ async def create_contact_message(
     await db.commit()
     await db.refresh(message)
 
-    # Send email notification (non-blocking, best-effort)
-    send_contact_notification(
+    # Read notification emails from DB (if configured by admin)
+    result = await db.execute(select(ContactInfo))
+    contact_info = result.scalar_one_or_none()
+    notification_emails_from_db = (
+        contact_info.notification_emails if contact_info else None
+    )
+
+    # Send email notification in background (non-blocking, best-effort)
+    background_tasks.add_task(
+        send_contact_notification,
         sender_name=data.name,
         sender_email=data.email,
         message=data.message,
+        notification_emails_from_db=notification_emails_from_db,
     )
 
     return message

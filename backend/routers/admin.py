@@ -127,11 +127,16 @@ async def reorder_projects(
     db: AsyncSession = Depends(get_db),
     admin: dict = Depends(get_current_admin),
 ):
+    # Fetch all relevant projects in a single query to avoid N+1
+    project_ids = [item.id for item in data.projects]
+    result = await db.execute(select(Project).where(Project.id.in_(project_ids)))
+    projects_map = {p.id: p for p in result.scalars().all()}
+
     for item in data.projects:
-        result = await db.execute(select(Project).where(Project.id == item.id))
-        project = result.scalar_one_or_none()
+        project = projects_map.get(item.id)
         if project:
             project.order = item.order
+
     await db.commit()
     return {"detail": "Projects reordered"}
 

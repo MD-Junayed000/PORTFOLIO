@@ -26,8 +26,6 @@ const emptyForm: ProjectForm = {
   order: 0,
 };
 
-const DISPLAY_COUNT_KEY = "portfolio_projects_display_count";
-
 export default function AdminProjects() {
   const [projects, setProjects] = useState<Project[]>([]);
   const [loading, setLoading] = useState(true);
@@ -70,14 +68,39 @@ export default function AdminProjects() {
 
   useEffect(() => {
     fetchProjects();
-    // Load display count from localStorage
-    const saved = localStorage.getItem(DISPLAY_COUNT_KEY);
-    if (saved) setDisplayCount(parseInt(saved) || 6);
+    // Load display count from server (about settings)
+    api
+      .get("/api/about")
+      .then((res) => {
+        const count = res.data?.project_display_count;
+        if (count && count > 0) setDisplayCount(count);
+      })
+      .catch(() => {});
   }, []);
 
-  const handleDisplayCountSave = () => {
-    localStorage.setItem(DISPLAY_COUNT_KEY, String(displayCount));
-    toast.success(`Display count set to ${displayCount}`);
+  const handleDisplayCountSave = async () => {
+    try {
+      // Fetch current about data, then update with new display count
+      const aboutRes = await api.get("/api/about");
+      const aboutData = aboutRes.data;
+      await api.put("/api/admin/about", {
+        bio: aboutData.bio || "Profile not yet configured.",
+        title: aboutData.title || "Portfolio",
+        photo_url: aboutData.photo_url,
+        education: aboutData.education,
+        focus_area: aboutData.focus_area,
+        subtitle: aboutData.subtitle,
+        linkedin_url: aboutData.linkedin_url,
+        github_url: aboutData.github_url,
+        scholar_url: aboutData.scholar_url,
+        extra_links: aboutData.extra_links,
+        cv_file_path: aboutData.cv_file_path,
+        project_display_count: displayCount,
+      });
+      toast.success(`Display count set to ${displayCount}`);
+    } catch {
+      toast.error("Failed to save display count");
+    }
   };
 
   const moveProject = async (index: number, direction: "up" | "down") => {

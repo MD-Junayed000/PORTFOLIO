@@ -75,12 +75,16 @@ export default function HeaderGame() {
     }
   }, [resetGame]);
 
-  // Keyboard event listener for spacebar
+  // Keyboard event listener for spacebar - scoped to game container focus
   useEffect(() => {
+    const container = canvasRef.current?.parentElement;
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.code === "Space" || e.key === " ") {
-        e.preventDefault();
-        jump();
+        // Only handle space when the game container (or its children) is focused
+        if (container && container.contains(document.activeElement as Node)) {
+          e.preventDefault();
+          jump();
+        }
       }
     };
     window.addEventListener("keydown", handleKeyDown);

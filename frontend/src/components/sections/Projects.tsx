@@ -9,7 +9,6 @@ import api from "@/lib/api";
 import type { Project } from "@/types";
 
 const DEFAULT_DISPLAY_COUNT = 6;
-const DISPLAY_COUNT_KEY = "portfolio_projects_display_count";
 
 function getImageUrl(url: string): string {
   // Convert GitHub blob URLs to raw.githubusercontent.com URLs
@@ -35,11 +34,16 @@ export default function Projects() {
       .then((res) => setProjects(res.data))
       .catch(() => {});
 
-    // Read display count from localStorage (set by admin)
-    if (typeof window !== "undefined") {
-      const saved = localStorage.getItem(DISPLAY_COUNT_KEY);
-      if (saved) setDisplayCount(parseInt(saved) || DEFAULT_DISPLAY_COUNT);
-    }
+    // Read display count from server-side about settings
+    api
+      .get("/api/about")
+      .then((res) => {
+        const count = res.data?.project_display_count;
+        if (count && count > 0) {
+          setDisplayCount(count);
+        }
+      })
+      .catch(() => {});
   }, []);
 
   const allTechs = Array.from(

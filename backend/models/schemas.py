@@ -29,6 +29,7 @@ class AboutContentBase(BaseModel):
     scholar_url: Optional[str] = None
     extra_links: Optional[str] = None  # JSON string of [{name, url, icon}]
     cv_file_path: Optional[str] = None
+    project_display_count: Optional[int] = 6
 
 
 class AboutContentResponse(AboutContentBase):

@@ -17,6 +17,7 @@ export default function AdminAbout() {
   const [scholarUrl, setScholarUrl] = useState("");
   const [extraLinks, setExtraLinks] = useState<ExtraLink[]>([]);
   const [cvFilePath, setCvFilePath] = useState("");
+  const [projectDisplayCount, setProjectDisplayCount] = useState<number | null>(null);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
 
@@ -33,6 +34,7 @@ export default function AdminAbout() {
         setGithubUrl(res.data.github_url || "");
         setScholarUrl(res.data.scholar_url || "");
         setCvFilePath(res.data.cv_file_path || "");
+        setProjectDisplayCount(res.data.project_display_count ?? 6);
         if (res.data.extra_links) {
           try {
             setExtraLinks(JSON.parse(res.data.extra_links));
@@ -60,6 +62,7 @@ export default function AdminAbout() {
         scholar_url: scholarUrl || null,
         extra_links: extraLinks.length > 0 ? JSON.stringify(extraLinks) : null,
         cv_file_path: cvFilePath || null,
+        project_display_count: projectDisplayCount,
       });
       toast.success("About updated");
     } catch {

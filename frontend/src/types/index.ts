@@ -11,6 +11,7 @@ export interface About {
   scholar_url: string | null;
   extra_links: string | null; // JSON string of [{name, url, icon}]
   cv_file_path: string | null;
+  project_display_count: number | null;
 }
 
 export interface ExtraLink {
