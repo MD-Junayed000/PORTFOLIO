@@ -21,6 +21,14 @@ class AboutContentBase(BaseModel):
     bio: str
     title: str
     photo_url: Optional[str] = None
+    education: Optional[str] = None
+    focus_area: Optional[str] = None
+    subtitle: Optional[str] = None
+    linkedin_url: Optional[str] = None
+    github_url: Optional[str] = None
+    scholar_url: Optional[str] = None
+    extra_links: Optional[str] = None  # JSON string of [{name, url, icon}]
+    cv_file_path: Optional[str] = None
 
 
 class AboutContentResponse(AboutContentBase):
@@ -162,3 +170,18 @@ class DocumentResponse(BaseModel):
 class AdminSettings(BaseModel):
     hf_model_id: Optional[str] = None
     hf_api_token: Optional[str] = None
+
+
+# Contact Info schemas
+class ContactInfoBase(BaseModel):
+    email: Optional[str] = None
+    phone: Optional[str] = None
+    address: Optional[str] = None
+    notification_emails: Optional[str] = None
+
+
+class ContactInfoResponse(ContactInfoBase):
+    id: int
+
+    class Config:
+        from_attributes = True

@@ -16,6 +16,7 @@ from database import (
     Experience,
     ContactMessage,
     Document,
+    ContactInfo,
 )
 from models.schemas import (
     AboutContentBase,
@@ -34,6 +35,8 @@ from models.schemas import (
     DocumentBase,
     DocumentResponse,
     AdminSettings,
+    ContactInfoBase,
+    ContactInfoResponse,
 )
 from routers.auth import get_current_admin
 from services.vector_store import process_pdf, delete_document
@@ -290,6 +293,54 @@ async def upload_photo(
     return {"photo_url": f"/uploads/{safe_filename}"}
 
 
+@router.post("/upload-cv")
+async def upload_cv(
+    file: UploadFile = File(...),
+    admin: dict = Depends(get_current_admin),
+):
+    if not file.filename or not file.filename.lower().endswith(".pdf"):
+        raise HTTPException(status_code=400, detail="Only PDF files are accepted")
+
+    os.makedirs(UPLOAD_DIR, exist_ok=True)
+
+    # Read file content with size limit
+    content = await file.read()
+    if len(content) > settings.MAX_PDF_SIZE:
+        raise HTTPException(
+            status_code=400,
+            detail=f"File too large. Maximum size is {settings.MAX_PDF_SIZE // (1024 * 1024)} MB",
+        )
+
+    # Generate a safe UUID-based filename
+    safe_filename = f"cv_{uuid.uuid4().hex}.pdf"
+    file_path = os.path.join(UPLOAD_DIR, safe_filename)
+
+    with open(file_path, "wb") as f:
+        f.write(content)
+
+    return {"cv_url": f"/uploads/{safe_filename}", "filename": safe_filename}
+
+
+@router.delete("/cv")
+async def delete_cv(
+    db: AsyncSession = Depends(get_db),
+    admin: dict = Depends(get_current_admin),
+):
+    result = await db.execute(select(AboutContent))
+    about = result.scalar_one_or_none()
+    if about is None or not about.cv_file_path:
+        raise HTTPException(status_code=404, detail="No CV file found")
+
+    # Delete file from disk
+    file_path = os.path.join(UPLOAD_DIR, os.path.basename(about.cv_file_path))
+    if os.path.exists(file_path):
+        os.remove(file_path)
+
+    about.cv_file_path = None
+    await db.commit()
+    return {"detail": "CV deleted"}
+
+
 @router.post("/upload-pdf")
 async def upload_pdf(
     file: UploadFile = File(...),
@@ -471,6 +522,44 @@ async def delete_message(
     await db.delete(message)
     await db.commit()
     return {"detail": "Message deleted"}
+
+
+# Contact Info
+@router.get("/contact-info", response_model=ContactInfoResponse)
+async def get_admin_contact_info(
+    db: AsyncSession = Depends(get_db),
+    admin: dict = Depends(get_current_admin),
+):
+    result = await db.execute(select(ContactInfo))
+    info = result.scalar_one_or_none()
+    if info is None:
+        return ContactInfoResponse(
+            id=0,
+            email=None,
+            phone=None,
+            address=None,
+            notification_emails=None,
+        )
+    return info
+
+
+@router.put("/contact-info", response_model=ContactInfoResponse)
+async def update_contact_info(
+    data: ContactInfoBase,
+    db: AsyncSession = Depends(get_db),
+    admin: dict = Depends(get_current_admin),
+):
+    result = await db.execute(select(ContactInfo))
+    info = result.scalar_one_or_none()
+    if info is None:
+        info = ContactInfo(**data.model_dump())
+        db.add(info)
+    else:
+        for key, value in data.model_dump().items():
+            setattr(info, key, value)
+    await db.commit()
+    await db.refresh(info)
+    return info
 
 
 # Settings

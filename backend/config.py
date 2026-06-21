@@ -44,6 +44,13 @@ class Settings(BaseSettings):
     MAX_PHOTO_SIZE: int = 10 * 1024 * 1024  # 10 MB
     MAX_PDF_SIZE: int = 50 * 1024 * 1024    # 50 MB
 
+    # SMTP settings for email notifications (all optional)
+    SMTP_HOST: Optional[str] = None
+    SMTP_PORT: int = 587
+    SMTP_USER: Optional[str] = None
+    SMTP_PASSWORD: Optional[str] = None
+    NOTIFICATION_EMAIL: Optional[str] = None
+
     class Config:
         env_file = ".env"
         env_file_encoding = "utf-8"

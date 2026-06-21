@@ -1,11 +1,14 @@
 "use client";
 
+import { useEffect, useState } from "react";
 import { motion } from "framer-motion";
 import { ArrowDown, Download } from "lucide-react";
 import Image from "next/image";
 import { GithubIcon, LinkedinIcon, GoogleScholarIcon } from "@/components/icons";
+import api from "@/lib/api";
+import { About } from "@/types";
 
-const socialLinks = [
+const defaultSocialLinks = [
   {
     icon: GithubIcon,
     href: "https://github.com/MD-Junayed000",
@@ -24,6 +27,45 @@ const socialLinks = [
 ];
 
 export default function Hero() {
+  const [about, setAbout] = useState<About | null>(null);
+
+  useEffect(() => {
+    api
+      .get("/api/about")
+      .then((res) => setAbout(res.data))
+      .catch(() => {});
+  }, []);
+
+  const socialLinks = about
+    ? [
+        about.github_url && {
+          icon: GithubIcon,
+          href: about.github_url,
+          label: "GitHub",
+        },
+        about.linkedin_url && {
+          icon: LinkedinIcon,
+          href: about.linkedin_url,
+          label: "LinkedIn",
+        },
+        about.scholar_url && {
+          icon: GoogleScholarIcon,
+          href: about.scholar_url,
+          label: "Google Scholar",
+        },
+      ].filter(Boolean) as { icon: typeof GithubIcon; href: string; label: string }[]
+    : defaultSocialLinks;
+
+  // Use default links if none are configured
+  const displayLinks = socialLinks.length > 0 ? socialLinks : defaultSocialLinks;
+
+  const subtitle = about?.subtitle || "AI Engineering Enthusiast";
+  const focusArea =
+    about?.focus_area ||
+    "Specializing in Computer Vision, NLP, and Cloud-Native ML Systems. Building intelligent solutions at the intersection of research and production.";
+
+  const cvUrl = about?.cv_file_path || "/Muhammad_Junayed_CV.pdf";
+
   return (
     <section className="relative min-h-screen flex items-center justify-center pt-32 md:pt-40">
       <div className="relative z-10 max-w-4xl mx-auto px-4 sm:px-6 lg:px-8 text-center">
@@ -48,17 +90,15 @@ export default function Hero() {
             Muhammad Junayed
           </h1>
           <p className="text-lg sm:text-xl text-primary font-medium mb-4">
-            AI Engineering Enthusiast
+            {subtitle}
           </p>
           <p className="text-base sm:text-lg text-muted max-w-2xl mx-auto mb-6">
-            Specializing in Computer Vision, NLP, and Cloud-Native ML Systems.
-            Building intelligent solutions at the intersection of research and
-            production.
+            {focusArea}
           </p>
 
           {/* Social Links */}
           <div className="flex items-center gap-4 mb-8">
-            {socialLinks.map((social) => (
+            {displayLinks.map((social) => (
               <a
                 key={social.label}
                 href={social.href}
@@ -81,7 +121,7 @@ export default function Hero() {
               View Projects
             </a>
             <a
-              href="/Muhammad_Junayed_CV.pdf"
+              href={cvUrl}
               target="_blank"
               rel="noopener noreferrer"
               className="inline-flex items-center gap-2 px-6 py-3 border border-border hover:border-primary/50 hover:bg-surface text-foreground rounded-lg font-medium transition-colors"

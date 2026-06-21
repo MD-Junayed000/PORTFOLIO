@@ -20,6 +20,14 @@ class AboutContent(Base):
     bio = Column(Text, nullable=False)
     title = Column(String(255), nullable=False)
     photo_url = Column(String(500), nullable=True)
+    education = Column(Text, nullable=True)
+    focus_area = Column(Text, nullable=True)
+    subtitle = Column(String(500), nullable=True)
+    linkedin_url = Column(String(500), nullable=True)
+    github_url = Column(String(500), nullable=True)
+    scholar_url = Column(String(500), nullable=True)
+    extra_links = Column(Text, nullable=True)  # JSON string of [{name, url, icon}]
+    cv_file_path = Column(String(500), nullable=True)
 
 
 class Project(Base):
@@ -83,6 +91,16 @@ class ContactMessage(Base):
     email = Column(String(255), nullable=False)
     message = Column(Text, nullable=False)
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+
+
+class ContactInfo(Base):
+    __tablename__ = "contact_info"
+
+    id = Column(Integer, primary_key=True, index=True)
+    email = Column(String(255), nullable=True)
+    phone = Column(String(100), nullable=True)
+    address = Column(String(500), nullable=True)
+    notification_emails = Column(Text, nullable=True)  # Comma-separated emails
 
 
 class Document(Base):

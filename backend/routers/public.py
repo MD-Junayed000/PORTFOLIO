@@ -12,6 +12,7 @@ from database import (
     Certificate,
     Experience,
     ContactMessage,
+    ContactInfo,
 )
 from models.schemas import (
     AboutContentResponse,
@@ -22,7 +23,9 @@ from models.schemas import (
     ExperienceResponse,
     ContactMessageBase,
     ContactMessageResponse,
+    ContactInfoResponse,
 )
+from services.email import send_contact_notification
 
 router = APIRouter(prefix="/api", tags=["public"])
 
@@ -37,6 +40,14 @@ async def get_about(db: AsyncSession = Depends(get_db)):
             bio="Profile not yet configured.",
             title="Portfolio",
             photo_url=None,
+            education=None,
+            focus_area=None,
+            subtitle=None,
+            linkedin_url=None,
+            github_url=None,
+            scholar_url=None,
+            extra_links=None,
+            cv_file_path=None,
         )
     return about
 
@@ -92,4 +103,27 @@ async def create_contact_message(
     db.add(message)
     await db.commit()
     await db.refresh(message)
+
+    # Send email notification (non-blocking, best-effort)
+    send_contact_notification(
+        sender_name=data.name,
+        sender_email=data.email,
+        message=data.message,
+    )
+
     return message
+
+
+@router.get("/contact-info", response_model=ContactInfoResponse)
+async def get_contact_info(db: AsyncSession = Depends(get_db)):
+    result = await db.execute(select(ContactInfo))
+    info = result.scalar_one_or_none()
+    if info is None:
+        return ContactInfoResponse(
+            id=0,
+            email=None,
+            phone=None,
+            address=None,
+            notification_emails=None,
+        )
+    return info
