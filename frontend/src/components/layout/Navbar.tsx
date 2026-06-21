@@ -3,12 +3,14 @@
 import { useState } from "react";
 import { Menu, X } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
+import HeaderGame from "@/components/games/HeaderGame";
 
 const navLinks = [
   { href: "#about", label: "About" },
+  { href: "#experience", label: "Experience" },
   { href: "#projects", label: "Projects" },
+  { href: "#publications", label: "Publications" },
   { href: "#skills", label: "Skills" },
-  { href: "#research", label: "Research" },
   { href: "#certificates", label: "Certificates" },
   { href: "#contact", label: "Contact" },
 ];
@@ -17,7 +19,7 @@ export default function Navbar() {
   const [mobileOpen, setMobileOpen] = useState(false);
 
   return (
-    <nav className="fixed top-0 left-0 right-0 z-50 bg-background/80 backdrop-blur-md border-b border-border">
+    <nav className="fixed top-0 left-0 right-0 z-50 bg-background/90 backdrop-blur-md border-b border-border">
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
         <div className="flex items-center justify-between h-16">
           <a href="#" className="text-lg font-semibold text-foreground">
@@ -30,7 +32,7 @@ export default function Navbar() {
               <a
                 key={link.href}
                 href={link.href}
-                className="text-sm text-muted hover:text-foreground transition-colors duration-200"
+                className="text-sm text-muted hover:text-primary transition-colors duration-200"
               >
                 {link.label}
               </a>
@@ -45,6 +47,13 @@ export default function Navbar() {
           >
             {mobileOpen ? <X size={20} /> : <Menu size={20} />}
           </button>
+        </div>
+      </div>
+
+      {/* Header Game - decorative runner */}
+      <div className="hidden md:block border-t border-border/50 bg-surface-hover/30">
+        <div className="max-w-7xl mx-auto">
+          <HeaderGame />
         </div>
       </div>
 
@@ -63,7 +72,7 @@ export default function Navbar() {
                   key={link.href}
                   href={link.href}
                   onClick={() => setMobileOpen(false)}
-                  className="block text-sm text-muted hover:text-foreground transition-colors"
+                  className="block text-sm text-muted hover:text-primary transition-colors"
                 >
                   {link.label}
                 </a>

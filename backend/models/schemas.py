@@ -1,5 +1,8 @@
-from pydantic import BaseModel, Field
+import re
+
+from pydantic import BaseModel, Field, field_validator
 from typing import Optional, List
+from datetime import datetime
 
 
 # Auth schemas
@@ -113,6 +116,46 @@ class ChatRequest(BaseModel):
 class ChatResponse(BaseModel):
     response: str
     sources: List[str] = []
+
+
+# Contact Message schemas
+class ContactMessageBase(BaseModel):
+    name: str = Field(..., max_length=100)
+    email: str = Field(..., max_length=254)
+    message: str = Field(..., max_length=5000)
+
+    @field_validator("email")
+    @classmethod
+    def validate_email_format(cls, v: str) -> str:
+        pattern = r"^[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}$"
+        if not re.match(pattern, v):
+            raise ValueError("Invalid email address format")
+        return v
+
+
+class ContactMessageResponse(ContactMessageBase):
+    id: int
+    created_at: Optional[datetime] = None
+
+    class Config:
+        from_attributes = True
+
+
+# Document schemas
+class DocumentBase(BaseModel):
+    topic: Optional[str] = None
+
+
+class DocumentResponse(BaseModel):
+    id: int
+    filename: str
+    topic: Optional[str] = None
+    original_name: Optional[str] = None
+    uploaded_at: Optional[datetime] = None
+    chunk_count: int = 0
+
+    class Config:
+        from_attributes = True
 
 
 # Admin Settings schemas

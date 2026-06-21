@@ -56,8 +56,33 @@ export interface LoginResponse {
   token_type: string;
 }
 
+export interface Experience {
+  id: number;
+  title: string;
+  organization: string;
+  period: string;
+  description: string | null;
+  order: number;
+}
+
 export interface Document {
   id: number;
   filename: string;
+  topic: string | null;
+  original_name: string | null;
   uploaded_at: string;
+  chunk_count: number | null;
+}
+
+export interface ContactMessage {
+  id: number;
+  name: string;
+  email: string;
+  message: string;
+  created_at: string;
+}
+
+export interface DatabaseInfo {
+  name: string;
+  row_count: number;
 }

@@ -1,6 +1,7 @@
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine, async_sessionmaker
 from sqlalchemy.orm import DeclarativeBase
-from sqlalchemy import Column, Integer, String, Text, Float
+from sqlalchemy import Column, Integer, String, Text, Float, DateTime
+from datetime import datetime, timezone
 from config import settings
 
 
@@ -72,6 +73,27 @@ class Certificate(Base):
     issuer = Column(String(255), nullable=True)
     date = Column(String(50), nullable=True)
     file_path = Column(String(500), nullable=True)
+
+
+class ContactMessage(Base):
+    __tablename__ = "contact_messages"
+
+    id = Column(Integer, primary_key=True, index=True)
+    name = Column(String(255), nullable=False)
+    email = Column(String(255), nullable=False)
+    message = Column(Text, nullable=False)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+
+
+class Document(Base):
+    __tablename__ = "documents"
+
+    id = Column(Integer, primary_key=True, index=True)
+    filename = Column(String(500), nullable=False)
+    topic = Column(String(255), nullable=True)
+    original_name = Column(String(500), nullable=True)
+    uploaded_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    chunk_count = Column(Integer, default=0)
 
 
 async def init_db():

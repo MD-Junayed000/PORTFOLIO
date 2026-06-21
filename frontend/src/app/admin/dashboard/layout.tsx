@@ -16,16 +16,22 @@ import {
   LogOut,
   Menu,
   X,
+  Briefcase,
+  MessageSquare,
+  Database,
 } from "lucide-react";
 
 const sidebarLinks = [
   { href: "/admin/dashboard", icon: LayoutDashboard, label: "Overview" },
   { href: "/admin/dashboard/about", icon: User, label: "About" },
   { href: "/admin/dashboard/projects", icon: FolderOpen, label: "Projects" },
+  { href: "/admin/dashboard/experiences", icon: Briefcase, label: "Experiences" },
   { href: "/admin/dashboard/skills", icon: BarChart3, label: "Skills" },
   { href: "/admin/dashboard/research", icon: FileText, label: "Research" },
   { href: "/admin/dashboard/certificates", icon: Award, label: "Certificates" },
   { href: "/admin/dashboard/documents", icon: FileUp, label: "Documents" },
+  { href: "/admin/dashboard/messages", icon: MessageSquare, label: "Messages" },
+  { href: "/admin/dashboard/database", icon: Database, label: "Database" },
   { href: "/admin/dashboard/settings", icon: Settings, label: "Settings" },
 ];
 

@@ -10,6 +10,8 @@ from database import (
     Skill,
     Research,
     Certificate,
+    Experience,
+    ContactMessage,
 )
 from models.schemas import (
     AboutContentResponse,
@@ -17,6 +19,9 @@ from models.schemas import (
     SkillResponse,
     ResearchResponse,
     CertificateResponse,
+    ExperienceResponse,
+    ContactMessageBase,
+    ContactMessageResponse,
 )
 
 router = APIRouter(prefix="/api", tags=["public"])
@@ -67,3 +72,24 @@ async def get_resume():
         "name": "Muhammad Junayed",
         "title": "AI Engineering Enthusiast | Computer Vision | Cloud-Native ML Systems",
     }
+
+
+@router.get("/experiences", response_model=List[ExperienceResponse])
+async def get_experiences(db: AsyncSession = Depends(get_db)):
+    result = await db.execute(select(Experience).order_by(Experience.id.desc()))
+    return result.scalars().all()
+
+
+@router.post("/contact", response_model=ContactMessageResponse)
+async def create_contact_message(
+    data: ContactMessageBase, db: AsyncSession = Depends(get_db)
+):
+    message = ContactMessage(
+        name=data.name,
+        email=data.email,
+        message=data.message,
+    )
+    db.add(message)
+    await db.commit()
+    await db.refresh(message)
+    return message

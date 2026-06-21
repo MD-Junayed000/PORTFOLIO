@@ -1,11 +1,14 @@
+import logging
+
 import chromadb
-from chromadb.config import Settings as ChromaSettings
 from PyPDF2 import PdfReader
 from typing import List, Dict, Optional
 import os
 import uuid
 
 from config import settings
+
+logger = logging.getLogger(__name__)
 
 
 _client: Optional[chromadb.ClientAPI] = None
@@ -16,11 +19,10 @@ def get_chroma_client():
     global _client
     if _client is None:
         os.makedirs(settings.CHROMA_PERSIST_DIR, exist_ok=True)
-        _client = chromadb.Client(ChromaSettings(
-            chroma_db_impl="duckdb+parquet",
-            persist_directory=settings.CHROMA_PERSIST_DIR,
-            anonymized_telemetry=False,
-        ))
+        _client = chromadb.PersistentClient(
+            path=settings.CHROMA_PERSIST_DIR,
+            settings=chromadb.Settings(anonymized_telemetry=False),
+        )
     return _client
 
 
@@ -32,8 +34,12 @@ def initialize_collection():
             name="portfolio_knowledge",
             metadata={"hnsw:space": "cosine"},
         )
-    except Exception:
+    except Exception as e:
         # Fallback: use simple in-memory client if persistent fails
+        logger.warning(
+            "ChromaDB persistent client failed, falling back to in-memory mode: %s",
+            str(e),
+        )
         global _client
         _client = chromadb.Client()
         _collection = _client.get_or_create_collection(
