@@ -141,6 +141,68 @@ class TestCleanContextForLLM:
         assert "The approach: using transformer architectures" in result
         assert "He works on several areas including" in result
 
+    def test_strips_dataset_metadata(self):
+        """Dataset, Common abbreviation, Target classes must be stripped as metadata."""
+        context = (
+            "• Dataset:  Breast Ultrasound Images Dataset\n"
+            "• Common abbreviation:  BUSI\n"
+            "• Target classes:  Normal, benign, and malignant\n"
+            "A tailored Vision Transformer was developed for classification."
+        )
+        result = _clean_context_for_llm(context)
+        assert "Dataset:" not in result
+        assert "Common abbreviation:" not in result
+        assert "Target classes:" not in result
+        assert "BUSI" not in result
+        assert "tailored Vision Transformer" in result
+
+    def test_strips_training_type_metadata(self):
+        """Training type and other missing labels are caught."""
+        context = (
+            "• Training type: Industrial training\n"
+            "• DOI link: https://doi.org/10.1109/example\n"
+            "The training focused on modern software engineering workflows."
+        )
+        result = _clean_context_for_llm(context)
+        assert "Training type:" not in result
+        assert "DOI link:" not in result
+        assert "modern software engineering workflows" in result
+
+    def test_strips_multiline_metadata_continuation(self):
+        """Multi-line metadata values should not leave orphaned continuation lines."""
+        context = (
+            "• Conference:  2025 IEEE International Conference on Signal Processing, Information, Communication and\n"
+            "Systems\n"
+            "A tailored Vision Transformer was developed."
+        )
+        result = _clean_context_for_llm(context)
+        assert "Conference:" not in result
+        assert "Systems" not in result
+        assert "tailored Vision Transformer" in result
+
+    def test_strips_inline_dataset_header(self):
+        """'Dataset' appearing as trailing section header after a sentence should be removed."""
+        context = (
+            "The study investigated deep-learning-based classification of breast-ultrasound images. Dataset\n"
+            "• Dataset:  Breast Ultrasound Images Dataset"
+        )
+        result = _clean_context_for_llm(context)
+        assert "Dataset:" not in result
+        # The word "Dataset" as a trailing header should be removed
+        assert "Dataset" not in result or "deep-learning" in result
+
+    def test_bullet_catchall_strips_any_bullet_colon_pattern(self):
+        """Any line starting with bullet + words + colon should be stripped."""
+        context = (
+            "• Some Unknown Label:  some value here\n"
+            "• Another Weird Field:  another value\n"
+            "This is a narrative sentence about the research."
+        )
+        result = _clean_context_for_llm(context)
+        assert "Some Unknown Label:" not in result
+        assert "Another Weird Field:" not in result
+        assert "narrative sentence about the research" in result
+
 
 class TestCleanResponse:
     """Test _clean_response removes metadata echoed by the LLM."""
@@ -227,6 +289,38 @@ class TestCleanResponse:
         # The long prose sentence with terminal punctuation should survive
         assert "hallucination detection" in result
         assert "Muhammad Junayed focuses on NLP research" in result
+
+    def test_removes_dataset_and_training_metadata(self):
+        """_clean_response removes Dataset, Common abbreviation, Target classes, Training type."""
+        text = (
+            "• Dataset:  Breast Ultrasound Images Dataset\n"
+            "• Common abbreviation:  BUSI\n"
+            "• Target classes:  Normal, benign, and malignant\n"
+            "• Training type:  Industrial training\n"
+            "• DOI link:  https://doi.org/10.1109/example\n"
+            "Muhammad Junayed developed a Vision Transformer for classification."
+        )
+        result = _clean_response(text)
+        assert "Dataset:" not in result
+        assert "Common abbreviation:" not in result
+        assert "Target classes:" not in result
+        assert "Training type:" not in result
+        assert "DOI link:" not in result
+        assert "Vision Transformer" in result
+
+    def test_removes_all_bullet_lines(self):
+        """All lines starting with bullet char are removed from LLM output."""
+        text = (
+            "• Organization: Brain Station 23 PLC\n"
+            "• Role: Industrial Trainee\n"
+            "• Duration: May 2025\n"
+            "Muhammad Junayed completed industrial training at Brain Station 23."
+        )
+        result = _clean_response(text)
+        assert "•" not in result
+        assert "Organization:" not in result
+        assert "Role:" not in result
+        assert "industrial training" in result
 
 
 class TestIsOffTopic:
