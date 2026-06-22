@@ -375,3 +375,123 @@ class TestIsOffTopic:
     def test_his_with_portfolio_keyword_is_on_topic(self):
         """'his' combined with portfolio keywords is on-topic."""
         assert _is_off_topic("what is his background?") is False
+
+class TestCleanContextDisclaimers:
+    """Test _clean_context_for_llm strips disclaimer/instructional phrases."""
+ 
+    def test_strips_disclaimer_phrases(self):
+        """Lines with chatbot instructions and 'not documented' phrases are removed."""
+        context = (
+            "Muhammad Junayed is a researcher at CUET.\n"
+            "The chatbot should not infer these details.\n"
+            "His exact responsibilities are not documented in the provided sources.\n"
+            "He specializes in NLP and computer vision."
+        )
+        result = _clean_context_for_llm(context)
+        assert "chatbot should not infer" not in result
+        assert "not documented in the provided sources" not in result
+        assert "Muhammad Junayed is a researcher" in result
+        assert "He specializes in NLP" in result
+ 
+    def test_strips_should_be_added_after_verification(self):
+        """Lines with 'should be added only after verification' are removed."""
+        context = (
+            "He published at IEEE conferences.\n"
+            "These values should be added only after verification from the published paper.\n"
+            "His research focuses on hallucination detection."
+        )
+        result = _clean_context_for_llm(context)
+        assert "should be added only after verification" not in result
+        assert "published at IEEE" in result
+        assert "hallucination detection" in result
+ 
+    def test_strips_should_not_assign(self):
+        """Lines with 'should not assign' are removed."""
+        context = (
+            "Muhammad Junayed is the first author.\n"
+            "The chatbot should not assign specific contributions without verified information.\n"
+            "The paper addresses hallucination detection in LLMs."
+        )
+        result = _clean_context_for_llm(context)
+        assert "should not assign" not in result
+        assert "Muhammad Junayed is the first author" in result
+        assert "hallucination detection" in result
+ 
+    def test_strips_additional_section_headers(self):
+        """'Individual Contribution' and 'Evaluation Limitation' as standalone lines are removed."""
+        context = (
+            "Individual Contribution\n"
+            "Muhammad Junayed is the first author.\n"
+            "Evaluation Limitation\n"
+            "The paper achieves state-of-the-art results.\n"
+            "Main Result\n"
+            "The model achieved 91.7 percent accuracy."
+        )
+        result = _clean_context_for_llm(context)
+        # Standalone headers should be removed
+        lines = [l.strip() for l in result.split('\n') if l.strip()]
+        for line in lines:
+            assert line.lower() not in ("individual contribution", "evaluation limitation", "main result")
+        # Content should survive
+        assert "Muhammad Junayed is the first author" in result
+        assert "state-of-the-art results" in result
+        assert "91.7 percent accuracy" in result
+ 
+ 
+class TestCleanResponseDisclaimers:
+    """Test _clean_response strips disclaimer phrases and leaked section headers."""
+ 
+    def test_removes_disclaimer_phrases_from_output(self):
+        """Sentences with disclaimer phrases are stripped from LLM output."""
+        text = (
+            "Muhammad Junayed is a researcher at CUET. "
+            "His exact responsibilities are not specified in the provided sources. "
+            "He focuses on NLP and computer vision."
+        )
+        result = _clean_response(text)
+        assert "not specified in the provided sources" not in result
+        assert "Muhammad Junayed is a researcher" in result
+        assert "NLP and computer vision" in result
+ 
+    def test_removes_should_not_infer(self):
+        """Sentences with 'should not infer' are removed from output."""
+        text = (
+            "Muhammad Junayed is the first author. "
+            "The chatbot should not infer these details. "
+            "He works on hallucination detection."
+        )
+        result = _clean_response(text)
+        assert "should not infer" not in result
+        assert "first author" in result
+        assert "hallucination detection" in result
+ 
+    def test_removes_leaked_section_headers(self):
+        """Section headers like 'Individual Contribution' are stripped from response."""
+        text = (
+            "Individual Contribution\n"
+            "Muhammad Junayed is the first author.\n"
+            "Evaluation Limitation\n"
+            "Results are strong."
+        )
+        result = _clean_response(text)
+        lines = [l.strip() for l in result.split('\n') if l.strip()]
+        for line in lines:
+            assert line.lower() not in ("individual contribution", "evaluation limitation")
+        assert "first author" in result
+ 
+    def test_removes_section_header_as_prefix(self):
+        """Section headers appearing as prefixes are stripped."""
+        text = "Individual Contribution Muhammad Junayed is listed as the fourth author."
+        result = _clean_response(text)
+        assert "Individual Contribution" not in result
+        assert "Muhammad Junayed is listed as the fourth author" in result
+ 
+    def test_removes_not_included_in_source_material(self):
+        """Sentences with 'not included in the source material' are stripped."""
+        text = (
+            "The following values are not included in the source material. "
+            "Muhammad Junayed is a talented researcher."
+        )
+        result = _clean_response(text)
+        assert "not included in the source material" not in result
+        assert "talented researcher" in result
