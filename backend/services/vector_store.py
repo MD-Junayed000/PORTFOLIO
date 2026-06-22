@@ -13,7 +13,10 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 import chromadb
-from PyPDF2 import PdfReader
+try:
+    from pypdf import PdfReader
+except ImportError:  # Backward compatibility
+    from PyPDF2 import PdfReader
 
 from config import settings
 
@@ -316,14 +319,84 @@ def _clean_pdf_text(text: str) -> str:
 
 
 def _parse_sections(text: str) -> List[Dict]:
-    """Parse headings 1-13, accepting both `1 Title` and `1. Title`."""
-    heading_pattern = re.compile(
-        r"^((?:[1-9]|1[0-3])(?:\.\d+)*)(?:\.)?\s+(.+?)\s*$",
-        re.MULTILINE,
-    )
-    matches = list(heading_pattern.finditer(text))
+    """Parse this portfolio PDF's numbered hierarchy safely.
 
-    if not matches:
+    Supported headings include ``1. Professional Profile`` and
+    ``10.3 Bangladesh Medicine Scraper``. The parser is stateful so numbered
+    content lists, such as ``1. Mistake identification`` inside section 9.2,
+    are not mistaken for new top-level document sections.
+    """
+    heading_pattern = re.compile(
+        r"^(\d+(?:\.\d+)*)(?:\.)?\s+(.+?)\s*$"
+    )
+    lines = text.splitlines()
+
+    accepted: List[Dict] = []
+    current_top_level = 0
+
+    for line_index, raw_line in enumerate(lines):
+        stripped = raw_line.strip()
+        match = heading_pattern.match(stripped)
+        if not match:
+            continue
+
+        section_number = match.group(1)
+        heading_title = match.group(2).strip()
+        parts = section_number.split(".")
+        top_level = int(parts[0])
+        is_subsection = len(parts) > 1
+
+        # The canonical document has top-level sections 1 through 13 in order.
+        # A subsection is valid only when it belongs to the active top-level
+        # section. This rejects numbered lists nested inside a section.
+        if current_top_level == 0:
+            is_valid = not is_subsection and top_level == 1
+        elif is_subsection:
+            is_valid = top_level == current_top_level
+        else:
+            is_valid = top_level == current_top_level + 1
+
+        if not is_valid:
+            continue
+
+        continuation_lines = 0
+
+        # PyPDF2 wraps three long headings in this PDF. Merge a short title
+        # continuation when the following line starts the section body.
+        if line_index + 2 < len(lines):
+            next_line = lines[line_index + 1].strip()
+            following_line = lines[line_index + 2].strip()
+            following_is_body = (
+                following_line.startswith(("•", "-", "*"))
+                or following_line in {
+                    "Problem", "Approach", "Dataset", "Technologies",
+                    "Features", "Architecture", "Outcome", "Hardware",
+                    "Models", "Responsibilities",
+                }
+            )
+            if (
+                len(heading_title) >= 55
+                and next_line
+                and len(next_line) <= 100
+                and not heading_pattern.match(next_line)
+                and following_is_body
+            ):
+                heading_title = f"{heading_title} {next_line}".strip()
+                continuation_lines = 1
+
+        accepted.append({
+            "line_index": line_index,
+            "body_start_line": line_index + 1 + continuation_lines,
+            "heading": heading_title,
+            "section_number": section_number,
+            "subsection": heading_title if is_subsection else None,
+            "entity_type": _get_entity_type(section_number),
+        })
+
+        if not is_subsection:
+            current_top_level = top_level
+
+    if not accepted:
         return [{
             "heading": "General",
             "section_number": "1",
@@ -333,30 +406,30 @@ def _parse_sections(text: str) -> List[Dict]:
         }]
 
     sections: List[Dict] = []
-    for index, match in enumerate(matches):
-        section_number = match.group(1)
-        heading_title = match.group(2).strip()
-        start = match.end()
-        end = (
-            matches[index + 1].start()
-            if index + 1 < len(matches)
-            else len(text)
+    for index, heading in enumerate(accepted):
+        end_line = (
+            accepted[index + 1]["line_index"]
+            if index + 1 < len(accepted)
+            else len(lines)
         )
+        section_text = "\n".join(
+            lines[heading["body_start_line"]:end_line]
+        ).strip()
 
-        section_text = text[start:end].strip()
+        # Empty parent headings such as "3. Education" are represented by
+        # their child sections and do not need an empty vector record.
         if not section_text:
             continue
 
         sections.append({
-            "heading": heading_title,
-            "section_number": section_number,
-            "subsection": heading_title if "." in section_number else None,
+            "heading": heading["heading"],
+            "section_number": heading["section_number"],
+            "subsection": heading["subsection"],
             "text": section_text,
-            "entity_type": _get_entity_type(section_number),
+            "entity_type": heading["entity_type"],
         })
 
     return sections
-
 
 def _hard_split_text(
     text: str,
@@ -810,7 +883,33 @@ def process_pdf(
         if not chunk_text_value:
             continue
 
-        texts.append(chunk_text_value)
+        section_heading = chunk.get("heading", "General")
+        section_number = str(chunk.get("section_number", "1"))
+        top_level = section_number.split(".")[0]
+        parent_heading = {
+            "1": "Professional Profile",
+            "2": "Personal and Professional Information",
+            "3": "Education",
+            "4": "Undergraduate Thesis",
+            "5": "Work Experience",
+            "6": "Research Interests",
+            "7": "Technical Skills",
+            "8": "Relevant Coursework",
+            "9": "Research and Publications",
+            "10": "Selected Projects",
+            "11": "Extracurricular Activities and Leadership",
+            "12": "Awards and Achievements",
+            "13": "Languages",
+        }.get(top_level, "")
+
+        heading_context = section_heading
+        if parent_heading and parent_heading != section_heading:
+            heading_context = f"{parent_heading} > {section_heading}"
+
+        # Include the section path in the embedded/BM25 text. Many unique
+        # project and award names occur only in PDF headings, not in the body.
+        indexed_text = f"{heading_context}\n{chunk_text_value}".strip()
+        texts.append(indexed_text)
         metadata = {
             "section": chunk.get("heading", "General"),
             "section_number": chunk.get("section_number", "1"),
