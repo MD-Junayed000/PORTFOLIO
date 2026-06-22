@@ -11,18 +11,15 @@ from services.vector_store import query as vector_query
 logger = logging.getLogger(__name__)
 
 
-SYSTEM_PROMPT = """You are a friendly, conversational AI assistant on Muhammad Junayed's portfolio website. Your role is to help visitors learn about Muhammad Junayed.
+SYSTEM_PROMPT = """You are Muhammad Junayed's portfolio assistant. Answer questions about him using the context below.
 
-Guidelines:
-1. Answer questions about Muhammad Junayed using the context below. Be natural and conversational.
-2. If the context contains the answer, respond confidently with specific details.
-3. If asked something NOT covered in the context (like weather, general knowledge, opinions), politely explain you can only discuss Muhammad Junayed's portfolio, skills, and background.
-4. For greetings, be warm and suggest what you can help with.
-5. Keep answers concise (2-4 sentences) unless the user asks for detail.
-6. Never invent information. If the context doesn't have the answer, say so honestly.
-7. You can handle follow-up questions and casual conversation about Junayed naturally.
+Rules:
+- Use ONLY the context to answer. Be concise (2-4 sentences).
+- Speak naturally. Never output bullet points, metadata, or raw formatting from the context.
+- If the question is unrelated to Junayed's portfolio (weather, opinions, general knowledge), say: "I can only answer questions about Muhammad Junayed's portfolio and background."
+- If the context doesn't contain the answer, say you don't have that specific information.
 
-Context from knowledge base:
+Context:
 {context}
 """
 
@@ -46,18 +43,58 @@ def _is_off_topic(message: str) -> bool:
     # AND doesn't ask about skills/projects/experience/education etc, it's likely off-topic
     portfolio_keywords = [
         "junayed", "skill", "project", "experience", "education", "research",
-        "paper", "publication", "work", "built", "tech", "stack", "language",
+        "paper", "publication", "work", "works", "working", "job", "employ", "employed",
+        "built", "tech", "stack", "language",
         "linkedin", "github", "email", "contact", "phone", "address", "cv",
         "resume", "certificate", "background", "about", "who", "qualification",
         "university", "cuet", "degree", "internship", "company", "kaggle",
         "scholar", "award", "achievement", "portfolio",
         "live", "lives", "located", "home", "city", "country", "place", "from", "based",
+        "cgpa", "gpa", "grade", "result", "score", "marks",
+        "thesis", "course", "coursework", "language", "speak", "bangla", "english",
+        "interest", "orcid", "doi", "poridhi", "brain station", "intern", "hackathon",
+        "competition", "conference", "ieee", "acl", "semeval", "televerse", "arobot",
+        "rickshaw", "bistro", "sensor", "iot", "embedded", "extracurricular",
+        "volunteer", "activity", "club", "society", "training", "trainee",
+        "supervisor", "he", "his", "him",
     ]
     has_portfolio_relevance = any(kw in message_lower for kw in portfolio_keywords)
     # Short generic questions without portfolio keywords are likely off-topic
     if not has_portfolio_relevance and len(message.split()) <= 6:
         return True
     return False
+
+
+def _clean_context_for_llm(context: str) -> str:
+    """Remove metadata artifacts from context to prevent LLM from echoing them."""
+    lines = context.split("\n")
+    cleaned_lines = []
+    for line in lines:
+        stripped = line.strip()
+        # Skip metadata bullet points
+        if stripped.startswith("\u2022") and any(kw in stripped.lower() for kw in [
+            "document id:", "document_id:", "project type:", "role:",
+            "repository:", "code repository:", "doi:", "doi link:",
+            "publisher:", "conference abbreviation:", "publication date:",
+            "conference location:", "pages:", "common abbreviation:",
+            "information not provided", "muhammad junayed's author position:",
+            "competition:", "exact leaderboard", "official evaluation",
+            "dataset split", "per-category", "error analysis",
+            "comparison with competing",
+        ]):
+            continue
+        # Skip "Keywords" lines at the end of sections
+        if stripped.lower().startswith("keywords") and ";" in stripped:
+            continue
+        # Skip section number artifacts like "- 11." or "- 5."
+        if re.match(r'^-\s*\d+\.?\s*$', stripped):
+            continue
+        cleaned_lines.append(line)
+
+    result = "\n".join(cleaned_lines)
+    # Collapse multiple blank lines
+    result = re.sub(r'\n{3,}', '\n\n', result)
+    return result.strip()
 
 
 async def generate_response(user_message: str) -> dict:
@@ -78,23 +115,13 @@ async def generate_response(user_message: str) -> dict:
     # Retrieve relevant context from vector store (5 chunks for better coverage)
     results = vector_query(user_message, n_results=5)
 
-    # Build context with section heading labels
+    # Build context from retrieved chunks (no section labels - they leak into responses)
     context_parts = []
     for r in results:
-        metadata = r.get("metadata", {})
-        section_label = metadata.get("section", "")
-        subsection_label = metadata.get("subsection", "")
-        if section_label and subsection_label and subsection_label != section_label:
-            label = f"[Section: {section_label} - {subsection_label}]"
-        elif section_label:
-            label = f"[Section: {section_label}]"
-        else:
-            label = ""
-        if label:
-            context_parts.append(f"{label}\n{r['text']}")
-        else:
-            context_parts.append(r["text"])
-
+        text = r.get("text", "").strip()
+        if text:
+            context_parts.append(text)
+    
     context = "\n\n".join(context_parts) if context_parts else "No specific context available."
 
     sources = [r["metadata"].get("source", "profile") for r in results if r.get("metadata")]
@@ -123,8 +150,11 @@ async def generate_response(user_message: str) -> dict:
             "sources": [],
         }
 
+    # Clean context to remove metadata before sending to LLM
+    clean_context = _clean_context_for_llm(context)
+
     # Call HuggingFace Inference API
-    prompt = _build_prompt(user_message, context)
+    prompt = _build_prompt(user_message, clean_context)
     try:
         response_text = await _call_hf_api(prompt)
         logger.info("Successfully generated response via HF API for query: %s", user_message[:80])
@@ -162,9 +192,11 @@ def _clean_response(text: str) -> str:
     # Look for the system prompt signature and remove everything before the actual answer
     system_prompt_markers = [
         "You are a friendly, conversational AI assistant",
+        "You are Muhammad Junayed's portfolio assistant",
         "Context from knowledge base:",
         "User question:",
         "Guidelines:",
+        "Rules:",
     ]
     for marker in system_prompt_markers:
         if marker in text:
@@ -177,6 +209,15 @@ def _clean_response(text: str) -> str:
                 text = remaining[newline_idx:].strip()
             else:
                 text = ""
+
+    # Remove metadata patterns the LLM might echo from context
+    text = re.sub(r'\u2022\s*Document ID:\s*\S+\s*', '', text)
+    text = re.sub(r'\u2022\s*(Project type|Role|Repository|Code repository|Competition|Publisher|DOI|DOI link|Conference|Conference abbreviation|Conference location|Publication date|Pages|Common abbreviation|Dataset|Target classes|Muhammad Junayed\'s author position):\s*[^\n]*', '', text)
+    text = re.sub(r'\bKeywords\s+[\w;,\s]+\.?\s*', '', text)
+    # Remove "[Section: ...]" if still present
+    text = re.sub(r'\[Section:[^\]]*\]', '', text)
+    # Remove "Information Not Provided" blocks
+    text = re.sub(r'Information Not Provided[^\n]*(?:\n\u2022[^\n]*)*', '', text)
 
     # Collapse multiple newlines into max 2
     text = re.sub(r'\n{3,}', '\n\n', text)
@@ -401,7 +442,7 @@ def _generate_fallback_response(user_message: str, context: str) -> str:
         )
 
     # Address/location requests
-    if any(word in message_lower for word in ["address", "location", "where", "live", "based"]):
+    if any(word in message_lower for word in ["address", "location", "live", "based", "home"]) and not any(w in message_lower for w in ["work", "job", "company", "employ"]):
         # Check context for address info
         if context and context != "No specific context available.":
             address_match = re.search(r'address[:\s-]+([^\n,]+)', context, re.IGNORECASE)
@@ -451,6 +492,51 @@ def _generate_fallback_response(user_message: str, context: str) -> str:
             "- B.Sc. thesis on hallucination detection/mitigation in LLMs\n"
             "- Multiple ML/AI projects including healthcare chatbot and industrial defect recognition\n\n"
             "Ask about his research or projects for more details!"
+        )
+
+    # Thesis requests
+    if any(word in message_lower for word in ["thesis", "research topic", "dissertation"]):
+        return (
+            "Muhammad Junayed's undergraduate thesis is titled 'Closing the Loop on RAG Hallucinations: "
+            "Inference-Time Control via Dual Residual-Stream and FFN Activation Probes.' "
+            "It investigates methods for detecting and mitigating hallucinations in large language models "
+            "during inference. His supervisor is Priyonti Paul Tumpa, Assistant Professor at CUET's ETE department. "
+            "The thesis is currently ongoing."
+        )
+
+    # Education/CGPA requests
+    if any(word in message_lower for word in ["cgpa", "gpa", "grade", "education", "degree", "study"]):
+        return (
+            "Muhammad Junayed is pursuing a B.Sc. in Electronics and Telecommunication Engineering "
+            "at Chittagong University of Engineering and Technology (CUET), Bangladesh. "
+            "He started in March 2022 and is currently in his final year."
+        )
+
+    # Work/experience requests
+    if any(word in message_lower for word in ["work", "job", "employ", "intern", "company", "experience"]) and not any(w in message_lower for w in ["project", "built"]):
+        return (
+            "Muhammad Junayed has worked at:\n"
+            "- Software Engineer Intern at Poridhi.io (cloud-native infrastructure)\n"
+            "- Industrial Trainee at Brain Station 23 PLC (software development)\n\n"
+            "He gained experience in backend engineering, cloud computing, and production software systems."
+        )
+
+    # Language requests
+    if any(word in message_lower for word in ["language", "speak", "fluent", "bangla", "bengali", "english"]) and not any(w in message_lower for w in ["programming", "code", "python", "javascript"]):
+        return (
+            "Muhammad Junayed speaks:\n"
+            "- Bangla (native language)\n"
+            "- English (professional proficiency)"
+        )
+
+    # Coursework requests
+    if any(word in message_lower for word in ["course", "coursework", "subject", "class"]):
+        return (
+            "Muhammad Junayed's relevant coursework includes:\n"
+            "- Electronics & Communication: Digital Systems, VLSI, Communication Theory\n"
+            "- Signal Processing: DSP, Control Systems\n"
+            "- Computing: Data Structures, OOP, Computer Architecture\n"
+            "- Mathematics: Linear Algebra, Probability, Numerical Methods"
         )
 
     # If no meaningful context available after keyword checks, return generic response

@@ -35,7 +35,7 @@ export default function About() {
               <h3 className="text-lg font-semibold text-foreground mb-2">
                 {about?.title || "AI Engineering Enthusiast"}
               </h3>
-              <p className="text-sm text-muted">
+              <p className="text-sm text-muted text-justify">
                 {about?.bio ||
                   "Passionate about building intelligent systems that bridge cutting-edge research with real-world applications."}
               </p>
@@ -46,7 +46,7 @@ export default function About() {
               <h3 className="text-lg font-semibold text-foreground mb-2">
                 Education
               </h3>
-              <p className="text-sm text-muted">
+              <p className="text-sm text-muted text-justify">
                 Final-year student in Electronics and Telecommunication
                 Engineering (ETE) at Chittagong University of Engineering and
                 Technology (CUET).
@@ -58,7 +58,7 @@ export default function About() {
               <h3 className="text-lg font-semibold text-foreground mb-2">
                 Focus Areas
               </h3>
-              <p className="text-sm text-muted">
+              <p className="text-sm text-muted text-justify">
                 Computer Vision, Natural Language Processing, RAG pipelines,
                 MLOps, and Cloud-Native ML Systems.
               </p>
