@@ -1,0 +1,32 @@
+{
+  "id": "FEAT-001",
+  "type": "fix",
+  "description": "Fix the chatbot response quality issues: aggressive metadata stripping from context before sending to LLM, robust post-processing of LLM output to remove echoed metadata, improved off-topic detection that does not treat bare pronouns as portfolio-relevant, and better error handling for intermittent API failures.",
+  "status": "completed",
+  "steps": [
+    "1. In backend/services/chatbot.py, rewrite _clean_context_for_llm() to be far more aggressive. The current approach only strips lines matching bullet patterns. The new approach should: (a) Remove ALL lines matching '* Key: Value' pattern regardless of bullet prefix - use regex like r'^\\s*[•◦▪\\-*]?\\s*[A-Za-z][^:]{0,60}:\\s+.+' for metadata-like lines that contain structured data like Document ID, Authors, Conference, DOI, Publisher, Pages, etc. (b) Remove standalone section headers that the LLM echoes: 'Research Problem', 'Approach', 'Dataset', 'Images', 'Keywords'. (c) Remove lines that are just URLs (DOI links, code repo links). (d) Remove 'Information Not Provided' lines. (e) Keep only narrative/descriptive text - sentences that form natural language paragraphs. The key insight: strip any line that looks like structured metadata (Key: Value format) and any standalone labels/headers.",
+    "2. In backend/services/chatbot.py, rewrite _clean_response() to be much more comprehensive. The current regex patterns require bullet prefixes. The new version should: (a) Remove ANY line that matches metadata pattern 'Label: value' where Label is a capitalized word/phrase (with or without bullet). Specifically target: Document ID, Authors, Conference, Publisher, DOI, Pages, Code repository, Publication date, Conference abbreviation, Conference location, Team, Venue, Workshop abbreviation, Official paper link, Muhammad Junayed's author position, Employment type, Duration, Organization, Role. (b) Remove section headers appearing alone on a line: 'Research Problem', 'Approach', 'Dataset', 'Images', 'Keywords'. (c) Remove 'Sources:' lines and source filenames like 'Muhammad_Junayed_RAG_Knowledge_Base.pdf'. (d) Remove any remaining bullet points (lines starting with bullet chars). (e) After all removals, collapse whitespace and ensure the final response reads as natural sentences.",
+    "3. In backend/services/chatbot.py, fix _is_off_topic() to not treat bare pronouns ('he', 'his', 'him') as sufficient portfolio relevance. Remove 'he', 'his', 'him' from portfolio_keywords. Instead, only count pronouns as portfolio-relevant if the message ALSO contains at least one substantive portfolio keyword (like 'skill', 'project', 'research', 'live', etc.) OR the message is longer than 6 words. This ensures 'is he ok?' is correctly identified as off-topic while 'where does he live?' still passes because it contains 'live'.",
+    "4. In backend/services/chatbot.py, improve error handling in generate_response(). The 'where he lives?' query fails on first attempt suggesting a transient error. Wrap the HF API call in a retry mechanism: if _call_hf_api raises an exception, retry once after a 2-second delay before falling back. Also ensure that the except block in generate_response returns the fallback response rather than raising.",
+    "5. In backend/services/chatbot.py, enhance the system prompt to more strongly instruct the model. Add explicit instructions like: 'NEVER include metadata fields such as Document ID, Authors, Conference, DOI, Publisher, or Pages in your response. NEVER use bullet points. Respond ONLY in complete natural sentences.' Also reduce max_new_tokens from 500 to 300 to limit the model's tendency to dump raw context when given too much room.",
+    "6. Add/update tests in backend/tests/test_api.py (or a new test file backend/tests/test_chatbot.py) that verify: (a) _clean_context_for_llm() strips all metadata lines from sample context containing Document ID, Authors, Conference, DOI patterns. (b) _clean_response() removes metadata from a sample LLM output that echoes Document ID, Conference, bullet points. (c) _is_off_topic() returns True for 'is he ok?' and returns False for 'where does he live?'. (d) _is_off_topic() returns True for clearly off-topic questions."
+  ],
+  "acceptance_criteria": [
+    "_clean_context_for_llm() strips all structured metadata (Document ID, Authors, Conference, DOI, Publisher, Pages, etc.) from context text, leaving only narrative sentences",
+    "_clean_response() removes any metadata echoed by the LLM including lines with 'Document ID:', 'Authors:', 'Conference:', 'DOI:', bullet points, and section headers",
+    "_is_off_topic('is he ok?') returns True",
+    "_is_off_topic('where does he live?') returns False",
+    "_is_off_topic('what is the weather?') returns True",
+    "The system prompt explicitly forbids metadata output and bullet points",
+    "max_new_tokens reduced to 300",
+    "generate_response has retry logic for transient HF API failures",
+    "All existing tests still pass",
+    "New unit tests for _clean_context_for_llm, _clean_response, and _is_off_topic pass"
+  ],
+  "verification": [
+    "cd /projects/sandbox/PORTFOLIO/backend && TESTING=true SECRET_KEY=test-key python -m pytest tests/ -v",
+    "cd /projects/sandbox/PORTFOLIO/frontend && npm run build"
+  ],
+  "blocked_reason": null,
+  "findings": "All 52 tests pass (17 existing API tests + 35 new chatbot unit tests). Frontend build also passes. The _clean_context_for_llm regex for Key:Value pattern is intentionally broad to catch all metadata forms from the PDF. The _is_off_topic fix uses word-boundary regex for pronoun detection to avoid false matches in longer words."
+}

@@ -15,7 +15,9 @@ SYSTEM_PROMPT = """You are Muhammad Junayed's portfolio assistant. Answer questi
 
 Rules:
 - Use ONLY the context to answer. Be concise (2-4 sentences).
-- Speak naturally. Never output bullet points, metadata, or raw formatting from the context.
+- Speak naturally in complete sentences. NEVER use bullet points or lists.
+- NEVER include metadata fields such as Document ID, Authors, Conference, DOI, Publisher, Pages, Code repository, Publication date, or any "Key: Value" formatted data in your response.
+- NEVER echo raw formatting, section headers, or structured data from the context.
 - If the question is unrelated to Junayed's portfolio (weather, opinions, general knowledge), say: "I can only answer questions about Muhammad Junayed's portfolio and background."
 - If the context doesn't contain the answer, say you don't have that specific information.
 
@@ -56,9 +58,27 @@ def _is_off_topic(message: str) -> bool:
         "competition", "conference", "ieee", "acl", "semeval", "televerse", "arobot",
         "rickshaw", "bistro", "sensor", "iot", "embedded", "extracurricular",
         "volunteer", "activity", "club", "society", "training", "trainee",
-        "supervisor", "he", "his", "him",
+        "supervisor",
     ]
+
+    # Pronouns alone are NOT sufficient to indicate portfolio relevance.
+    # They only count if combined with a substantive keyword or a longer message.
+    pronoun_keywords = ["he", "his", "him"]
+
     has_portfolio_relevance = any(kw in message_lower for kw in portfolio_keywords)
+
+    # Check if pronouns are present (word-boundary match to avoid false positives)
+    has_pronoun = any(
+        re.search(r'\b' + re.escape(p) + r'\b', message_lower) for p in pronoun_keywords
+    )
+
+    # Pronouns only count as portfolio-relevant if the message ALSO contains
+    # a substantive portfolio keyword OR is longer than 6 words
+    if not has_portfolio_relevance and has_pronoun:
+        if len(message.split()) > 6:
+            has_portfolio_relevance = True
+        # Otherwise pronouns alone don't make it portfolio-relevant
+
     # Short generic questions without portfolio keywords are likely off-topic
     if not has_portfolio_relevance and len(message.split()) <= 6:
         return True
@@ -68,38 +88,114 @@ def _is_off_topic(message: str) -> bool:
 def _clean_context_for_llm(context: str) -> str:
     """Remove metadata artifacts from context to prevent LLM from echoing them.
     
-    The PDF contains structured metadata in '• Key: Value' format that the LLM
+    The PDF contains structured metadata in '* Key: Value' format that the LLM
     tends to echo verbatim. Strip all of these and keep only narrative text.
     """
     lines = context.split("\n")
     cleaned_lines = []
+
+    # Section headers that should be removed when they appear alone on a line
+    standalone_headers = {
+        "research problem", "approach", "dataset", "images", "keywords",
+        "key contributions", "methodology", "results", "conclusion",
+    }
+
+    # Known metadata labels that should always be stripped from context.
+    # This targeted approach avoids false-positives on narrative sentences
+    # that happen to contain a colon (e.g., "His focus: NLP and vision systems").
+    metadata_labels_pattern = re.compile(
+        r'^[\s•◦▪\-*]*(?:'
+        r'Document ID|Authors?|Conference|Publisher|DOI|Pages?|'
+        r'Code repository|Publication date|Conference abbreviation|'
+        r'Conference location|Team|Venue|Workshop abbreviation|'
+        r'Official paper link|Muhammad Junayed\'s author position|'
+        r'Employment type|Duration|Organization|Role|'
+        r'Source|Title|Volume|Issue|Journal|ISSN|ISBN|'
+        r'Affiliation|Institution|Department|Year|Date|'
+        r'Keywords|Abstract|References|Citation'
+        r')[^:\n]{0,40}:\s+.+',
+        re.IGNORECASE
+    )
+
+    # Fallback: lines with a short pre-colon segment (<=3 words, no lowercase verbs)
+    # that look like metadata labels rather than narrative sentences.
+    short_label_pattern = re.compile(
+        r'^[\s•◦▪\-*]*([A-Z][A-Za-z]*(?:\s+[A-Za-z]+){0,2}):\s+.+'
+    )
+
     for line in lines:
         stripped = line.strip()
-        # Skip ANY bullet point that follows "• CapitalizedWord(s): value" pattern
-        # This catches Document ID, Authors, Conference, Publisher, DOI, Pages, etc.
-        if re.match(r'^[•◦▪-]\s*[A-Z][^:]{1,60}:\s', stripped):
+
+        # Skip empty lines (will re-add paragraph breaks later)
+        if not stripped:
+            cleaned_lines.append("")
             continue
-        # Also skip bullets with lowercase metadata keys common in the PDF
-        if re.match(r'^[•◦▪-]\s*(?:document|project|role|repository|code|doi|publisher|conference|publication|pages|common|target|dataset|muhammad|information|exact|official|error|comparison|per-)', stripped, re.IGNORECASE):
+
+        # Skip lines matching known metadata labels (with or without bullet prefix)
+        if metadata_labels_pattern.match(stripped):
             continue
-        # Skip "Keywords" lines at the end of sections  
-        if stripped.lower().startswith("keywords") and ";" in stripped:
+
+        # For lines matching a short label pattern (<=3 capitalized words before colon),
+        # only strip if the pre-colon segment looks like a metadata label, not a narrative.
+        # Narrative sentences typically have more context before the colon or start with
+        # pronouns/articles (His, The, A, etc.)
+        short_match = short_label_pattern.match(stripped)
+        if short_match:
+            pre_colon = short_match.group(1).strip()
+            pre_colon_words = pre_colon.split()
+            # If it's a single capitalized word or a 2-3 word capitalized phrase
+            # AND doesn't start with common narrative starters, treat as metadata
+            narrative_starters = {'his', 'her', 'the', 'a', 'an', 'my', 'our', 'their', 'its', 'this', 'that'}
+            if (len(pre_colon_words) <= 2
+                    and pre_colon_words[0].lower() not in narrative_starters
+                    and not any(c.islower() for c in pre_colon_words[0][1:])):
+                # Looks like a metadata label (e.g., "Publisher: IEEE", "Role: Intern")
+                # but NOT "His focus: NLP" or "The goal: detecting hallucinations"
+                continue
+
+        # Skip standalone section headers
+        if stripped.lower().rstrip(":").strip() in standalone_headers:
             continue
-        # Skip standalone section numbers like "- 11." or "- 5."
-        if re.match(r'^-\s*\d+\.?\s*$', stripped):
+
+        # Skip lines that are just URLs (DOI links, code repo links, etc.)
+        if re.match(r'^https?://', stripped):
             continue
+
         # Skip "Information Not Provided" markers
         if "information not provided" in stripped.lower():
             continue
-        # Skip lines that are just "Images" (artifact from PDF parsing)
-        if stripped == "Images":
+
+        # Skip lines that are just standalone labels like "Images"
+        if stripped in ("Images", "Keywords"):
             continue
+
+        # Skip "Keywords" lines with semicolons (keyword lists)
+        if stripped.lower().startswith("keywords") and ";" in stripped:
+            continue
+
+        # Skip standalone section numbers like "- 11." or "- 5."
+        if re.match(r'^[\-*•]\s*\d+\.?\s*$', stripped):
+            continue
+
+        # Skip lines that are pure bullet points with no narrative content
+        # (e.g., lines that are just a bullet char or bullet + short label)
+        if re.match(r'^[•◦▪\-*]\s*$', stripped):
+            continue
+
+        # Skip lines starting with bullet chars that look like list metadata
+        if re.match(r'^[•◦▪\-*]\s+[A-Z][^.!?]{0,80}$', stripped) and ':' not in stripped:
+            # This is a standalone bullet label without sentence structure - skip
+            # But keep it if it looks like a real sentence (has a verb-like structure)
+            words = stripped.lstrip('•◦▪-* ').split()
+            if len(words) <= 4:
+                continue
+
         cleaned_lines.append(line)
-    
+
     result = "\n".join(cleaned_lines)
     # Collapse multiple blank lines
     result = re.sub(r'\n{3,}', '\n\n', result)
-    # Remove any remaining "• " at start of lines that might be leftover
+    # Remove any remaining lone bullet chars on their own line
     result = re.sub(r'^\s*[•◦▪]\s*$', '', result, flags=re.MULTILINE)
     return result.strip()
 
@@ -166,13 +262,30 @@ async def generate_response(user_message: str) -> dict:
         response_text = await _call_hf_api(prompt)
         logger.info("Successfully generated response via HF API for query: %s", user_message[:80])
     except Exception as e:
-        logger.error(
-            "HF API call failed, using fallback. Error: %s | Model: %s | Query: %s",
+        logger.warning(
+            "HF API call failed (attempt 1), retrying in 2 seconds. Error: %s | Query: %s",
             str(e),
-            settings.HF_MODEL_ID,
             user_message[:80],
         )
-        response_text = _generate_fallback_response(user_message, context)
+        # Retry once after a 2-second delay for transient failures.
+        # NOTE: Worst-case latency budget: _call_hf_api has internal 503 retry with 5s sleep,
+        # so a single request path can take up to: 45s (first timeout) + 2s (sleep) +
+        # 20s (retry timeout) = ~67s before falling back. With the 503 internal retry,
+        # this could reach 45+5+45 + 2 + 20+5+20 = ~142s in the absolute worst case.
+        # A full circuit breaker is not implemented, but the shorter retry timeout (20s)
+        # limits the added latency from the retry attempt.
+        try:
+            await asyncio.sleep(2)
+            response_text = await _call_hf_api(prompt, timeout=20.0)
+            logger.info("Successfully generated response via HF API on retry for query: %s", user_message[:80])
+        except Exception as retry_e:
+            logger.error(
+                "HF API retry also failed, using fallback. Error: %s | Model: %s | Query: %s",
+                str(retry_e),
+                settings.HF_MODEL_ID,
+                user_message[:80],
+            )
+            response_text = _generate_fallback_response(user_message, context)
 
     return {
         "response": response_text,
@@ -217,18 +330,59 @@ def _clean_response(text: str) -> str:
             else:
                 text = ""
 
-    # Remove ALL metadata bullet patterns the LLM might echo
-    # Pattern: any line starting with • followed by a label and colon
-    text = re.sub(r'[•◦▪-]\s*[A-Z][^:\n]{1,60}:\s*[^\n]*\n?', '', text)
-    text = re.sub(r'[•◦▪-]\s*(?:document|project|role|repository|code|doi|publisher|conference|publication|pages|common|target|dataset|muhammad|information|exact|official|error|comparison)[^:\n]*:\s*[^\n]*\n?', '', text, flags=re.IGNORECASE)
+    # Remove ANY line matching "Label: value" metadata pattern (with or without bullet)
+    # This catches Document ID, Authors, Conference, DOI, Publisher, Pages, etc.
+    metadata_labels = (
+        r"Document ID|Authors?|Conference|Publisher|DOI|Pages?|"
+        r"Code repository|Publication date|Conference abbreviation|"
+        r"Conference location|Team|Venue|Workshop abbreviation|"
+        r"Official paper link|Muhammad Junayed's author position|"
+        r"Employment type|Duration|Organization|Role|"
+        r"Target|Dataset|Common|Exact|Error|Comparison|Per-"
+    )
+    # Remove lines with metadata labels (with or without bullet prefix)
+    text = re.sub(
+        r'^[\s•◦▪\-*]*(?:' + metadata_labels + r')[^:\n]{0,40}:\s*[^\n]*\n?',
+        '', text, flags=re.MULTILINE | re.IGNORECASE
+    )
+
+    # Remove section headers appearing alone on a line
+    section_headers = r"Research Problem|Approach|Dataset|Images|Keywords|Key Contributions|Methodology|Results|Conclusion"
+    text = re.sub(
+        r'^\s*(?:' + section_headers + r')\s*:?\s*$',
+        '', text, flags=re.MULTILINE | re.IGNORECASE
+    )
+
+    # Remove "Sources:" lines and source filenames
+    text = re.sub(r'^[\s•◦▪\-*]*Sources?:?\s*[^\n]*$', '', text, flags=re.MULTILINE | re.IGNORECASE)
+    text = re.sub(r'Muhammad_Junayed_RAG_Knowledge_Base\.pdf', '', text)
+
+    # Remove any remaining bullet points (lines starting with bullet chars)
+    text = re.sub(r'^\s*[•◦▪]\s*[^\n]*$', '', text, flags=re.MULTILINE)
+    # Remove dashes/asterisks used as bullets ONLY when the line also looks like metadata
+    # (contains a colon pattern or is a short label-like item <= 60 chars).
+    # This avoids stripping legitimate LLM prose that starts with "- " for emphasis.
+    text = re.sub(
+        r'^\s*[-*]\s+(?=[^\n]{0,60}:[^\n]*$)[^\n]*$',
+        '', text, flags=re.MULTILINE
+    )
+    # Also remove short dash-bullet lines (<=60 chars total, no sentence-ending punctuation)
+    # which are likely list items rather than prose
+    text = re.sub(
+        r'^\s*[-*]\s+[^\n.!?]{0,55}$',
+        '', text, flags=re.MULTILINE
+    )
+
     # Remove "[Section: ...]" if still present
     text = re.sub(r'\[Section:[^\]]*\]', '', text)
     # Remove "Information Not Provided" blocks
-    text = re.sub(r'Information Not Provided[^\n]*(?:\n[•◦▪][^\n]*)*', '', text, flags=re.IGNORECASE)
+    text = re.sub(r'Information Not Provided[^\n]*', '', text, flags=re.IGNORECASE)
     # Remove standalone "Images" artifact
     text = re.sub(r'^\s*Images\s*$', '', text, flags=re.MULTILINE)
     # Remove "Keywords ..." lines
     text = re.sub(r'Keywords\s+[\w;,\s]+\.?\s*', '', text)
+    # Remove standalone URLs
+    text = re.sub(r'^\s*https?://[^\s]+\s*$', '', text, flags=re.MULTILINE)
 
     # Collapse multiple newlines into max 2
     text = re.sub(r'\n{3,}', '\n\n', text)
@@ -274,19 +428,19 @@ def _clean_response(text: str) -> str:
     return text.strip()
 
 
-async def _call_hf_api(prompt: str) -> str:
+async def _call_hf_api(prompt: str, timeout: float = 45.0) -> str:
     url = f"https://api-inference.huggingface.co/models/{settings.HF_MODEL_ID}"
     headers = {"Authorization": f"Bearer {settings.HF_API_TOKEN}"}
     payload = {
         "inputs": prompt,
         "parameters": {
-            "max_new_tokens": 500,
+            "max_new_tokens": 300,
             "temperature": 0.4,
             "return_full_text": False,
         },
     }
 
-    async with httpx.AsyncClient(timeout=45.0) as client:
+    async with httpx.AsyncClient(timeout=timeout) as client:
         response = await client.post(url, json=payload, headers=headers)
 
         # Handle rate limiting
