@@ -80,7 +80,7 @@ export default function Hero() {
           className="flex flex-col items-center"
         >
           {/* Profile Image */}
-          <div className="relative w-40 h-40 sm:w-52 sm:h-52 mb-6 rounded-full overflow-hidden border-4 border-primary/20 shadow-lg">
+          <div className="relative w-48 h-48 sm:w-60 sm:h-60 mb-6 rounded-full overflow-hidden border-4 border-primary/20 shadow-lg">
             <Image
               src="/images/profile.png"
               alt="Muhammad Junayed"
@@ -90,7 +90,7 @@ export default function Hero() {
             />
           </div>
 
-          <h1 className="text-4xl sm:text-5xl lg:text-6xl font-bold text-foreground mb-4">
+          <h1 className="text-3xl sm:text-4xl lg:text-5xl font-bold text-foreground mb-4">
             Muhammad Junayed
           </h1>
           <p className="text-lg sm:text-xl text-primary font-medium mb-4">

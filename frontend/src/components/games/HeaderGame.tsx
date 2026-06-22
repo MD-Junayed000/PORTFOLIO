@@ -35,9 +35,9 @@ const ENEMY_CONFIGS = [
 
 const GRAVITY = 0.55;
 const JUMP_FORCE = -10.5;
-const GROUND_OFFSET = 30;
+const GROUND_OFFSET = 20;
 const GAME_SPEED = 3;
-const PLAYER_SIZE = 30;
+const PLAYER_SIZE = 36;
 
 export default function HeaderGame() {
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -117,7 +117,7 @@ export default function HeaderGame() {
       const parent = canvas.parentElement;
       if (parent) {
         canvas.width = parent.clientWidth;
-        canvas.height = 120;
+        canvas.height = 80;
       }
     };
     resizeCanvas();
@@ -146,7 +146,7 @@ export default function HeaderGame() {
 
       // Label text
       ctx.fillStyle = "#ffffff";
-      ctx.font = "bold 6px sans-serif";
+      ctx.font = "bold 7px sans-serif";
       ctx.textAlign = "center";
       ctx.textBaseline = "middle";
       ctx.fillText(obs.label, obs.x + obs.width / 2, obs.y + obs.height / 2);
@@ -190,12 +190,12 @@ export default function HeaderGame() {
         if (frameRef.current % 85 === 0) {
           const idx = Math.floor(Math.random() * ENEMY_CONFIGS.length);
           const config = ENEMY_CONFIGS[idx];
-          const labelWidth = Math.max(config.label.length * 5 + 8, 22);
+          const labelWidth = Math.max(config.label.length * 6 + 10, 28);
           obstaclesRef.current.push({
             x: width,
-            y: groundY - 18,
+            y: groundY - 22,
             width: labelWidth,
-            height: 18,
+            height: 22,
             color: config.color,
             label: config.label,
           });
@@ -262,7 +262,7 @@ export default function HeaderGame() {
 
   return (
     <div
-      className="w-full h-[120px] relative cursor-pointer select-none outline-none"
+      className="w-full h-20 relative cursor-pointer select-none outline-none"
       onClick={jump}
       tabIndex={0}
       role="button"
