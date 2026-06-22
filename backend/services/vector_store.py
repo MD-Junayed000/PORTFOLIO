@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import gc
-import hashlib
 import logging
 import math
 import os
@@ -186,7 +185,7 @@ def get_chroma_client() -> Any:
 
 
 def _create_or_get_collection(client: Any) -> Any:
-    """Create or load the Chroma collection using a compatible configuration."""
+    """Create or load the cosine collection using ChromaDB 0.5.23."""
     return client.get_or_create_collection(
         name=COLLECTION_NAME,
         metadata={"hnsw:space": "cosine"},
@@ -781,6 +780,131 @@ def query(question: str, n_results: int = 5) -> List[Dict]:
     return reranked[:n_results]
 
 
+
+def _section_sort_key(section_number: str) -> Tuple[int, ...]:
+    values: List[int] = []
+    for part in str(section_number).split("."):
+        try:
+            values.append(int(part))
+        except ValueError:
+            values.append(999)
+    return tuple(values)
+
+
+def _records_from_collection_get(payload: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """Convert a Chroma ``get`` response into the chatbot result shape."""
+    ids = payload.get("ids") or []
+    documents = payload.get("documents") or []
+    metadatas = payload.get("metadatas") or []
+
+    records: List[Dict[str, Any]] = []
+    for index, doc_id in enumerate(ids):
+        document = documents[index] if index < len(documents) else None
+        metadata = metadatas[index] if index < len(metadatas) else None
+
+        if not document:
+            continue
+
+        records.append(
+            {
+                "text": document,
+                "metadata": metadata or {},
+                "distance": 0.0,
+                "doc_id": doc_id,
+            }
+        )
+
+    records.sort(
+        key=lambda item: (
+            _section_sort_key(
+                str((item.get("metadata") or {}).get("section_number") or "999")
+            ),
+            int((item.get("metadata") or {}).get("chunk_index") or 0),
+        )
+    )
+    return records
+
+
+def get_by_section_numbers(
+    section_numbers: List[str],
+) -> List[Dict[str, Any]]:
+    """Retrieve complete chunks for exact PDF section numbers.
+
+    Exact section retrieval is used for named projects, named publications,
+    CGPA, profile, thesis, education, and experience. It prevents an unrelated
+    semantically similar chunk from replacing the requested section.
+    """
+    collection = get_collection()
+    records: List[Dict[str, Any]] = []
+    seen_ids: set[str] = set()
+
+    for section_number in section_numbers:
+        try:
+            payload = collection.get(
+                where={"section_number": str(section_number)},
+                include=["documents", "metadatas"],
+            )
+        except Exception as exc:
+            logger.exception(
+                "Failed to retrieve section %s: %s",
+                section_number,
+                exc,
+            )
+            continue
+
+        for record in _records_from_collection_get(payload):
+            doc_id = str(record.get("doc_id") or "")
+            if doc_id in seen_ids:
+                continue
+            seen_ids.add(doc_id)
+            records.append(record)
+
+    records.sort(
+        key=lambda item: (
+            _section_sort_key(
+                str((item.get("metadata") or {}).get("section_number") or "999")
+            ),
+            int((item.get("metadata") or {}).get("chunk_index") or 0),
+        )
+    )
+    return records
+
+
+def get_by_entity_type(
+    entity_type: str,
+) -> List[Dict[str, Any]]:
+    """Retrieve all chunks belonging to one portfolio category."""
+    collection = get_collection()
+
+    try:
+        payload = collection.get(
+            where={"entity_type": str(entity_type)},
+            include=["documents", "metadatas"],
+        )
+    except Exception as exc:
+        logger.exception(
+            "Failed to retrieve entity type %s: %s",
+            entity_type,
+            exc,
+        )
+        return []
+
+    return _records_from_collection_get(payload)
+
+
+def clear_portfolio_collection() -> None:
+    """Delete all indexed records and reset BM25.
+
+    Use this once when migrating from an older incorrect chunking/indexing
+    implementation, then process the canonical PDF again.
+    """
+    collection = get_collection()
+    payload = collection.get(include=[])
+    ids = payload.get("ids") or []
+    if ids:
+        collection.delete(ids=ids)
+    get_bm25_index().clear()
+
 def delete_document(doc_id: str) -> None:
     if not doc_id:
         return
@@ -804,12 +928,11 @@ def chunk_text(
 
 
 def _make_document_id(file_path: str) -> str:
-    stem = re.sub(r"[^a-zA-Z0-9_-]+", "_", Path(file_path).stem).strip("_")
-    stem = stem or "document"
-    path_hash = hashlib.sha1(
-        str(Path(file_path).resolve()).encode("utf-8")
-    ).hexdigest()[:10]
-    return f"{stem.lower()}_{path_hash}"
+    """Create a stable ID so re-uploading the same PDF replaces old chunks."""
+    stem = Path(file_path).stem
+    stem = re.sub(r"\s*\(\d+\)\s*$", "", stem)
+    stem = re.sub(r"[^a-zA-Z0-9_-]+", "_", stem).strip("_").lower()
+    return stem or "document"
 
 
 def process_pdf(
