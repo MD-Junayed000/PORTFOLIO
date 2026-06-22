@@ -420,8 +420,12 @@ def _clean_response(text: str) -> str:
     # Remove section headers appearing alone on a line
     section_headers = r"Research Problem|Approach|Dataset|Images|Keywords|Key Contributions|Methodology|Results|Conclusion|Individual Contribution|Evaluation Limitation|Main Finding|Evaluated Tracks|Models Evaluated|Shared-Task Rankings|Exact F1 Results|Main Result"
     text = re.sub(
-        r'^\s*(?:' + section_headers + r')\s*:?\s*
- 
+        r'^\s*(?:' + section_headers + r')\s*:?\s*$',
+        '',
+        text,
+        flags=re.MULTILINE | re.IGNORECASE,
+    )
+
     # Remove "Sources:" lines and source filenames
     text = re.sub(r'^[\s•◦▪\-*]*Sources?:?\s*[^\n]*$', '', text, flags=re.MULTILINE | re.IGNORECASE)
     text = re.sub(r'Muhammad_Junayed_RAG_Knowledge_Base\.pdf', '', text)
@@ -951,116 +955,6 @@ def _format_general_answer(chunks: list) -> str:
                 combined = truncated + "..."
  
     return combined
-,
-        '', text, flags=re.MULTILINE | re.IGNORECASE
-    )
- 
-    # Remove section headers when they appear as prefixes in a line (e.g., "Individual Contribution Muhammad Junayed is...")
-    text = re.sub(
-        r'^\s*(?:Individual Contribution|Evaluation Limitation|Main Finding|Main Result)\s+',
-        '', text, flags=re.MULTILINE | re.IGNORECASE
-    )
- 
-    # Remove sentences containing disclaimer/instructional phrases
-    disclaimer_phrases = [
-        "should not infer",
-        "should not assign",
-        "not documented in the provided sources",
-        "not specified in the provided sources",
-        "not included in the source material",
-        "should be added only after verification",
-        "do not identify specific",
-        "exact responsibilities are not documented",
-        "chatbot should not",
-        "are not included in the provided sources",
-        "not included in the provided",
-        "these values should be added only",
-        "without verified information",
-    ]
-    # Split into sentences and filter out disclaimer sentences
-    sentences = re.split(r'(?<=[.!?])\s+', text)
-    filtered_sentences = []
-    for sentence in sentences:
-        sentence_lower = sentence.lower()
-        if any(phrase in sentence_lower for phrase in disclaimer_phrases):
-            continue
-        filtered_sentences.append(sentence)
-    text = " ".join(filtered_sentences)
- 
-    # Remove "Sources:" lines and source filenames
-    text = re.sub(r'^[\s•◦▪\-*]*Sources?:?\s*[^\n]*$', '', text, flags=re.MULTILINE | re.IGNORECASE)
-    text = re.sub(r'Muhammad_Junayed_RAG_Knowledge_Base\.pdf', '', text)
- 
-    # Remove any remaining bullet points (lines starting with bullet chars)
-    # The LLM should NEVER output bullet points - all such lines are metadata artifacts
-    text = re.sub(r'^\s*[•◦▪]\s*[^\n]*$', '', text, flags=re.MULTILINE)
-    # Remove dashes/asterisks used as bullets ONLY when the line also looks like metadata
-    # (contains a colon pattern or is a short label-like item <= 60 chars).
-    # This avoids stripping legitimate LLM prose that starts with "- " for emphasis.
-    text = re.sub(
-        r'^\s*[-*]\s+(?=[^\n]{0,60}:[^\n]*$)[^\n]*$',
-        '', text, flags=re.MULTILINE
-    )
-    # Also remove short dash-bullet lines (<=60 chars total, no sentence-ending punctuation)
-    # which are likely list items rather than prose
-    text = re.sub(
-        r'^\s*[-*]\s+[^\n.!?]{0,55}$',
-        '', text, flags=re.MULTILINE
-    )
- 
-    # Remove "[Section: ...]" if still present
-    text = re.sub(r'\[Section:[^\]]*\]', '', text)
-    # Remove "Information Not Provided" blocks
-    text = re.sub(r'Information Not Provided[^\n]*', '', text, flags=re.IGNORECASE)
-    # Remove standalone "Images" artifact
-    text = re.sub(r'^\s*Images\s*$', '', text, flags=re.MULTILINE)
-    # Remove "Keywords ..." lines
-    text = re.sub(r'Keywords\s+[\w;,\s]+\.?\s*', '', text)
-    # Remove standalone URLs
-    text = re.sub(r'^\s*https?://[^\s]+\s*$', '', text, flags=re.MULTILINE)
- 
-    # Collapse multiple newlines into max 2
-    text = re.sub(r'\n{3,}', '\n\n', text)
- 
-    # Strip leading/trailing whitespace
-    text = text.strip()
- 
-    # Remove repeated sentences (keep only first occurrence)
-    sentences = re.split(r'(?<=[.!?])\s+', text)
-    seen = set()
-    unique_sentences = []
-    for sentence in sentences:
-        normalized = sentence.strip().lower()
-        if normalized and normalized not in seen:
-            seen.add(normalized)
-            unique_sentences.append(sentence.strip())
-    text = " ".join(unique_sentences)
- 
-    # Truncate to max 1000 characters at a sentence boundary
-    if len(text) > 1000:
-        truncated = text[:1000]
-        # Find the last sentence boundary
-        last_boundary = max(
-            truncated.rfind(". "),
-            truncated.rfind("! "),
-            truncated.rfind("? "),
-            truncated.rfind(".\n"),
-        )
-        if last_boundary > 200:
-            text = truncated[:last_boundary + 1]
-        else:
-            # Try to cut at a period at the end
-            last_period = truncated.rfind(".")
-            if last_period > 200:
-                text = truncated[:last_period + 1]
-            else:
-                text = truncated.strip()
- 
-    # If response is empty after cleaning, return graceful fallback
-    if not text.strip():
-        return "I apologize, but I could not generate a proper response. Please try asking your question in a different way."
- 
-    return text.strip()
  
  
 async def _call_hf_api(prompt: str, timeout: float = 45.0) -> str:
