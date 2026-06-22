@@ -75,10 +75,27 @@ async def generate_response(user_message: str) -> dict:
             "sources": [],
         }
 
-    # Retrieve relevant context from vector store
-    results = vector_query(user_message, n_results=3)
-    context_texts = [r["text"] for r in results]
-    context = "\n\n".join(context_texts) if context_texts else "No specific context available."
+    # Retrieve relevant context from vector store (5 chunks for better coverage)
+    results = vector_query(user_message, n_results=5)
+
+    # Build context with section heading labels
+    context_parts = []
+    for r in results:
+        metadata = r.get("metadata", {})
+        section_label = metadata.get("section", "")
+        subsection_label = metadata.get("subsection", "")
+        if section_label and subsection_label and subsection_label != section_label:
+            label = f"[Section: {section_label} - {subsection_label}]"
+        elif section_label:
+            label = f"[Section: {section_label}]"
+        else:
+            label = ""
+        if label:
+            context_parts.append(f"{label}\n{r['text']}")
+        else:
+            context_parts.append(r["text"])
+
+    context = "\n\n".join(context_parts) if context_parts else "No specific context available."
 
     sources = [r["metadata"].get("source", "profile") for r in results if r.get("metadata")]
 
