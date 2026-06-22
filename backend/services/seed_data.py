@@ -1,8 +1,23 @@
+import logging
+import os
+
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 
 from database import AboutContent, Project, Skill, Research, async_session
-from services.vector_store import add_document, get_collection
+from services.vector_store import (
+    add_document,
+    get_collection,
+    process_pdf,
+)
+
+logger = logging.getLogger(__name__)
+
+# Path to the canonical RAG knowledge base PDF (relative to backend directory)
+CANONICAL_PDF_PATH = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+    "Muhammad_Junayed_RAG_Knowledge_Base.pdf",
+)
 
 
 async def seed_database():
@@ -194,12 +209,46 @@ async def seed_database():
 
 
 def seed_vector_store():
-    """Seed the vector store with Muhammad Junayed's profile information."""
+    """Seed the vector store by auto-ingesting the canonical RAG knowledge base PDF.
+
+    If the collection is empty or has fewer than 10 documents, ingest the PDF
+    using heading-aware semantic chunking.
+    """
     collection = get_collection()
-    if collection.count() > 0:
+    current_count = collection.count()
+
+    if current_count >= 10:
+        logger.info(
+            "Vector store already has %d documents, skipping PDF ingestion.",
+            current_count,
+        )
         return
 
-    # Profile summary
+    # Check if canonical PDF exists
+    if not os.path.exists(CANONICAL_PDF_PATH):
+        logger.warning(
+            "Canonical PDF not found at '%s'. Falling back to basic profile seeding.",
+            CANONICAL_PDF_PATH,
+        )
+        _seed_basic_profile()
+        return
+
+    # Ingest the canonical PDF with heading-aware chunking
+    logger.info("Ingesting canonical PDF: %s", CANONICAL_PDF_PATH)
+    try:
+        doc_ids = process_pdf(CANONICAL_PDF_PATH)
+        logger.info(
+            "Successfully ingested canonical PDF: %d chunks created.",
+            len(doc_ids),
+        )
+    except Exception as e:
+        logger.error("Failed to ingest canonical PDF: %s", str(e))
+        # Fallback to basic profile seeding
+        _seed_basic_profile()
+
+
+def _seed_basic_profile():
+    """Fallback: seed basic profile text if PDF is not available."""
     profile_texts = [
         (
             "Muhammad Junayed is an AI Engineering Enthusiast specializing in Computer Vision "
@@ -255,3 +304,4 @@ def seed_vector_store():
             metadata={"source": "profile", "chunk_index": i},
             doc_id=f"profile_{i}",
         )
+    logger.info("Seeded vector store with %d basic profile chunks (PDF fallback).", len(profile_texts))
