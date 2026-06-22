@@ -1,119 +1,796 @@
+from __future__ import annotations
+
 import asyncio
 import logging
 import re
- 
+from dataclasses import dataclass
+from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
+
 import httpx
-from typing import Optional
- 
+
 from config import settings
-from services.vector_store import query as vector_query
- 
+from services.vector_store import (
+    get_by_entity_type,
+    get_by_section_numbers,
+    query as vector_query,
+)
+
 logger = logging.getLogger(__name__)
- 
- 
-SYSTEM_PROMPT = """You are Muhammad Junayed's portfolio assistant. Answer questions about him using only the retrieved context below.
 
-Rules:
-- Give a concise, natural answer in 2-4 complete sentences.
-- Do not use bullet points unless the user explicitly asks for a list.
-- Never reveal internal fields such as Document ID or retrieval/chunk metadata.
-- Do not echo raw PDF formatting, section labels, or repeated "Key: Value" records. Convert relevant facts into natural sentences.
-- Public portfolio facts such as authors, conference names, dates, DOI links, repositories, contact links, scores, ranks, and project technologies may be stated when they directly answer the question.
-- Preserve qualifiers such as "approximate", "up to", "ongoing", and "as reported"; never strengthen them into certain claims.
-- Do not repeat source instructions, verification notes, evaluation-limitations blocks, or unsupported claims.
-- If the question is unrelated to Muhammad Junayed's portfolio, say: "I can only answer questions about Muhammad Junayed's portfolio and background."
-- If the retrieved context does not contain the answer, say that you do not have that specific information.
 
-Context:
+# ---------------------------------------------------------------------------
+# Public prompt and response constants
+# ---------------------------------------------------------------------------
+
+OFF_TOPIC_RESPONSE = (
+    "I can only answer questions about Muhammad Junayed's portfolio "
+    "and background."
+)
+
+NO_INFORMATION_RESPONSE = (
+    "I don't have that specific information in the available portfolio "
+    "knowledge base."
+)
+
+GREETING_WORDS = {
+    "hello",
+    "hi",
+    "hey",
+    "greetings",
+    "howdy",
+    "hola",
+    "yo",
+    "sup",
+    "good morning",
+    "good afternoon",
+    "good evening",
+}
+
+OFF_TOPIC_KEYWORDS = (
+    "weather",
+    "sports",
+    "game score",
+    "movie",
+    "recipe",
+    "cook",
+    "joke",
+    "funny",
+    "news today",
+    "stock",
+    "crypto",
+    "bitcoin",
+    "president",
+    "politics",
+    "war",
+    "religion",
+    "god",
+    "meaning of life",
+    "what time",
+    "calculate",
+    "translate",
+    "write code",
+    "debug",
+    "fix my",
+)
+
+SYSTEM_PROMPT = """You are Muhammad Junayed's portfolio assistant.
+
+Answer the user's question using ONLY the retrieved portfolio context.
+
+Core rules:
+- Answer the requested topic only. Do not mix projects, research, education, or work experience unless the question asks for more than one category.
+- Convert the retrieved records into natural prose. Never dump raw PDF text, page numbers, section paths, chunk metadata, or internal Document IDs.
+- Do not begin with labels such as "Professional Profile", "Selected Projects", "Research Problem", "Approach", or "Outcome".
+- Preserve factual qualifiers such as "ongoing", "approximate", "up to", and "as reported".
+- Do not invent missing measurements, responsibilities, deployment claims, results, or publication details.
+- For a broad summary, synthesize the category instead of copying one retrieved chunk.
+- For a named project or named publication, discuss only that item and include its purpose, main technologies or method, implementation, and outcome when present.
+- Use complete, readable sentences. Avoid bullet points unless the user explicitly asks for a list.
+- If the context does not contain the answer, say that the information is not available.
+
+Task-specific instruction:
+{intent_instruction}
+
+Retrieved context:
 {context}
 """
- 
- 
-# Detect off-topic questions that have nothing to do with a person's portfolio
-OFF_TOPIC_KEYWORDS = [
-    "weather", "sports", "game score", "movie", "recipe", "cook",
-    "joke", "funny", "news today", "stock", "crypto", "bitcoin",
-    "president", "politics", "war", "religion", "god",
-    "meaning of life", "what time", "calculate", "math",
-    "translate", "write code", "debug", "fix my",
-]
- 
- 
+
+
+# ---------------------------------------------------------------------------
+# Intent and entity definitions
+# ---------------------------------------------------------------------------
+
+INTENT_PROFILE = "profile"
+INTENT_RESEARCH_SUMMARY = "research_summary"
+INTENT_RESEARCH_SPECIFIC = "research_specific"
+INTENT_PROJECT_SUMMARY = "project_summary"
+INTENT_PROJECT_SPECIFIC = "project_specific"
+INTENT_CGPA = "cgpa"
+INTENT_EDUCATION = "education"
+INTENT_EXPERIENCE = "experience"
+INTENT_SKILLS = "skills"
+INTENT_THESIS = "thesis"
+INTENT_AWARDS = "awards"
+INTENT_CONTACT = "contact"
+INTENT_LANGUAGES = "languages"
+INTENT_COURSEWORK = "coursework"
+INTENT_EXTRACURRICULAR = "extracurricular"
+INTENT_GENERAL = "general"
+
+
+INTENT_INSTRUCTIONS = {
+    INTENT_PROFILE: (
+        "Give a concise professional introduction. Explain who Junayed is, "
+        "what he studies, and the main areas in which he works. Use 3-4 sentences."
+    ),
+    INTENT_RESEARCH_SUMMARY: (
+        "Summarize his research work, not his software projects. Mention his "
+        "ongoing undergraduate thesis and the three conference publications, "
+        "including each publication's topic or method and any verified result. "
+        "Use 4-6 sentences."
+    ),
+    INTENT_RESEARCH_SPECIFIC: (
+        "Explain only the named research work. Include the problem, dataset when "
+        "available, method, verified result or finding, and publication details "
+        "when directly relevant. Use 4-6 sentences."
+    ),
+    INTENT_PROJECT_SUMMARY: (
+        "Give a portfolio-level summary of his selected projects. Group them by "
+        "area, mention representative named projects, and describe the breadth "
+        "of his engineering work. Do not describe a research publication as a "
+        "project. Use 4-6 sentences."
+    ),
+    INTENT_PROJECT_SPECIFIC: (
+        "Explain only the named project in detail. Cover its purpose, major "
+        "technologies, architecture or implementation, main capabilities, and "
+        "documented outcome. Do not include unrelated projects. Use 4-6 sentences."
+    ),
+    INTENT_CGPA: (
+        "Answer the CGPA question directly, including the scale and coverage "
+        "semester when available. Use 1-2 sentences."
+    ),
+    INTENT_EDUCATION: (
+        "Summarize his education accurately, including degree, institution, "
+        "study period, and verified academic results. Use 3-4 sentences."
+    ),
+    INTENT_EXPERIENCE: (
+        "Summarize only his work and training experience. Include organization, "
+        "role, duration, and documented focus. Use 3-4 sentences."
+    ),
+    INTENT_SKILLS: (
+        "Summarize his technical skills by meaningful categories. Mention only "
+        "technologies present in the context. Use concise prose unless a list was requested."
+    ),
+    INTENT_THESIS: (
+        "Explain his ongoing undergraduate thesis: title, problem, proposed "
+        "direction, supervisor, and status. Do not claim completed results. "
+        "Use 4-5 sentences."
+    ),
+    INTENT_AWARDS: (
+        "Summarize his verified awards and competitive achievements. Preserve "
+        "rankings and qualifiers exactly. Use 3-5 sentences."
+    ),
+    INTENT_CONTACT: (
+        "Provide only the requested public contact or profile information in a "
+        "natural sentence."
+    ),
+    INTENT_LANGUAGES: (
+        "State his documented languages and proficiency levels accurately."
+    ),
+    INTENT_COURSEWORK: (
+        "Summarize the relevant coursework by academic category. Mention only "
+        "courses present in the context."
+    ),
+    INTENT_EXTRACURRICULAR: (
+        "Summarize his extracurricular activities and leadership roles, including "
+        "documented responsibilities and dates."
+    ),
+    INTENT_GENERAL: (
+        "Answer the question directly from the most relevant retrieved context "
+        "without adding unrelated portfolio categories."
+    ),
+}
+
+
+# Exact section mappings from the canonical PDF.
+INTENT_SECTION_NUMBERS = {
+    INTENT_PROFILE: ("1", "2"),
+    INTENT_CGPA: ("3.1",),
+    INTENT_EDUCATION: ("3.1", "3.2", "3.3"),
+    INTENT_THESIS: ("4.1", "4.2", "4.3"),
+    INTENT_EXPERIENCE: ("5.1", "5.2"),
+    INTENT_RESEARCH_SUMMARY: ("4.1", "4.2", "4.3", "9.1", "9.2", "9.3"),
+    INTENT_CONTACT: ("2",),
+    INTENT_LANGUAGES: ("13.1", "13.2"),
+    INTENT_COURSEWORK: ("8.1", "8.2", "8.3", "8.4"),
+    INTENT_EXTRACURRICULAR: ("11.1", "11.2", "11.3"),
+}
+
+
+PROJECT_ALIASES: Dict[str, Tuple[str, ...]] = {
+    "10.1": (
+        "arobot",
+        "aro bot",
+        "agentic multimodal rag chatbot",
+        "medical rag chatbot",
+    ),
+    "10.2": (
+        "uber fare",
+        "uber fare prediction",
+        "mlops orchestration",
+        "mlops uber fare",
+    ),
+    "10.3": (
+        "bangladesh medicine scraper",
+        "medicine scraper",
+        "medex scraper",
+    ),
+    "10.4": (
+        "nodescape",
+        "graph algorithm visualizer",
+        "graph type predictor",
+    ),
+    "10.5": (
+        "bistro-92",
+        "bistro 92",
+        "restaurant management system",
+    ),
+    "10.6": (
+        "smart attendance",
+        "face recognition and rfid",
+        "rfid smart attendance",
+    ),
+    "10.7": (
+        "credit card fraud",
+        "fraud detection",
+    ),
+    "10.8": (
+        "eeg alcoholism",
+        "alcoholism detection",
+        "eeg data analysis",
+    ),
+    "10.9": (
+        "flask celery aws",
+        "flask asynchronous task",
+        "async-tasks-main",
+        "aws pulumi task",
+    ),
+    "10.10": (
+        "node.js asynchronous task",
+        "node js asynchronous task",
+        "node async task",
+        "async_task_node",
+    ),
+    "10.11": (
+        "rickshawx",
+        "rickshaw x",
+        "smart mobility for cuet",
+    ),
+    "10.12": (
+        "aroma pharmacy",
+        "pharmacy e-commerce",
+        "pharmacy ecommerce",
+    ),
+    "10.13": (
+        "home power automation",
+        "power automation",
+        "prepaid energy monitoring",
+    ),
+    "10.14": (
+        "databench",
+        "tabular qa",
+        "question answering system",
+        "semeval 2024 task 8",
+    ),
+}
+
+
+RESEARCH_ALIASES: Dict[str, Tuple[str, ...]] = {
+    "9.1": (
+        "wafer",
+        "wafer map",
+        "silicon wafer",
+        "defect recognition",
+        "icaeee",
+        "cnn wafer",
+    ),
+    "9.2": (
+        "bea 2025",
+        "smollab",
+        "ai-powered tutors",
+        "ai powered tutors",
+        "pedagogical evaluation",
+        "mrbench",
+        "tutor identity",
+    ),
+    "9.3": (
+        "breast ultrasound",
+        "busi",
+        "cancer stages",
+        "vision transformer paper",
+        "spicscon",
+    ),
+}
+
+
+@dataclass(frozen=True)
+class IntentResult:
+    intent: str
+    section_number: Optional[str] = None
+    entity_name: Optional[str] = None
+
+
+# ---------------------------------------------------------------------------
+# Text matching and intent detection
+# ---------------------------------------------------------------------------
+
+def _normalize_text(text: str) -> str:
+    text = text.lower().replace("_", " ")
+    text = re.sub(r"[\u2010-\u2015]", "-", text)
+    text = re.sub(r"[^a-z0-9+#.\-\s]", " ", text)
+    text = re.sub(r"\s+", " ", text)
+    return text.strip()
+
+
 def _contains_term(text: str, term: str) -> bool:
-    """Match a word or phrase without accidental substring matches."""
-    pattern = r"(?<!\w)" + re.escape(term).replace(r"\ ", r"\s+") + r"(?!\w)"
-    return re.search(pattern, text, flags=re.IGNORECASE) is not None
+    """Match a whole word or phrase without substring errors."""
+    normalized_text = _normalize_text(text)
+    normalized_term = _normalize_text(term)
+    if not normalized_term:
+        return False
+    pattern = (
+        r"(?<![a-z0-9])"
+        + re.escape(normalized_term).replace(r"\ ", r"\s+")
+        + r"(?![a-z0-9])"
+    )
+    return re.search(pattern, normalized_text, flags=re.IGNORECASE) is not None
+
+
+def _find_alias(
+    message: str,
+    aliases: Dict[str, Tuple[str, ...]],
+) -> Optional[Tuple[str, str]]:
+    """Return the section and matched alias, preferring the longest alias."""
+    candidates: List[Tuple[int, str, str]] = []
+    for section_number, names in aliases.items():
+        for name in names:
+            if _contains_term(message, name):
+                candidates.append((len(name), section_number, name))
+
+    if not candidates:
+        return None
+
+    _, section_number, matched_name = max(candidates, key=lambda item: item[0])
+    return section_number, matched_name
+
+
+def _last_referenced_entity(
+    conversation_history: Optional[Sequence[Dict[str, Any]]],
+) -> Optional[Tuple[str, str, str]]:
+    """Resolve a project or publication mentioned in recent conversation history."""
+    if not conversation_history:
+        return None
+
+    for item in reversed(conversation_history[-8:]):
+        content = str(item.get("content") or item.get("message") or "")
+        project = _find_alias(content, PROJECT_ALIASES)
+        if project:
+            return INTENT_PROJECT_SPECIFIC, project[0], project[1]
+
+        research = _find_alias(content, RESEARCH_ALIASES)
+        if research:
+            return INTENT_RESEARCH_SPECIFIC, research[0], research[1]
+
+    return None
+
+
+def _resolve_follow_up(
+    message: str,
+    conversation_history: Optional[Sequence[Dict[str, Any]]],
+) -> str:
+    normalized = _normalize_text(message)
+    follow_up_markers = (
+        "this project",
+        "that project",
+        "it",
+        "this one",
+        "that one",
+        "tell me more",
+        "more details",
+        "how does it work",
+        "what technologies",
+    )
+
+    if not any(_contains_term(normalized, marker) for marker in follow_up_markers):
+        return message
+
+    previous_entity = _last_referenced_entity(conversation_history)
+    if not previous_entity:
+        return message
+
+    _, _, entity_name = previous_entity
+    return f"{message} The referenced item is {entity_name}."
+
+
+def _is_greeting(message: str) -> bool:
+    normalized = re.sub(r"[^\w\s]", "", message.lower()).strip()
+    return normalized in GREETING_WORDS
 
 
 def _is_off_topic(message: str) -> bool:
-    """Return True when a message is clearly outside Junayed's portfolio."""
-    message_lower = message.lower().strip()
-    if not message_lower:
+    """Return True only when the question is clearly unrelated."""
+    normalized = _normalize_text(message)
+    if not normalized:
         return True
 
-    # Match complete words/phrases. This prevents "war" from matching "award"
-    # and "math" from matching "mathematics".
-    if any(_contains_term(message_lower, term) for term in OFF_TOPIC_KEYWORDS):
-        return True
+    # Portfolio category words are valid even without explicitly naming Junayed.
+    portfolio_terms = (
+        "research",
+        "research work",
+        "publication",
+        "paper",
+        "papers",
+        "project",
+        "projects",
+        "experience",
+        "skills",
+        "education",
+        "cgpa",
+        "gpa",
+        "thesis",
+        "award",
+        "awards",
+        "achievement",
+        "coursework",
+        "linkedin",
+        "github",
+        "contact",
+        "email",
+        "phone",
+        "supervisor",
+        "internship",
+        "languages",
+        "extracurricular",
+        "arobot",
+        "bistro",
+        "rickshawx",
+        "databench",
+        "wafer",
+        "breast ultrasound",
+        "bea 2025",
+    )
+    if any(_contains_term(normalized, term) for term in portfolio_terms):
+        return False
 
-    person_terms = ("junayed", "muhammad", "he", "his", "him")
-    has_person_reference = any(
-        _contains_term(message_lower, term) for term in person_terms
+    person_reference = any(
+        _contains_term(normalized, term)
+        for term in ("junayed", "muhammad junayed", "he", "his", "him")
     )
 
-    strong_portfolio_terms = (
-        "skill", "skills", "project", "projects", "experience", "education",
-        "research", "paper", "publication", "job", "employment", "employed",
-        "technology", "technologies", "tech stack", "programming language",
-        "linkedin", "github", "email", "contact", "phone", "address", "cv",
-        "resume", "certificate", "certification", "background", "qualification",
-        "university", "cuet", "degree", "internship", "company", "kaggle",
-        "scholar", "award", "awards", "achievement", "achievements",
-        "portfolio", "cgpa", "gpa", "grade", "result", "score", "marks",
-        "thesis", "course", "courses", "coursework", "speak", "bangla",
-        "english", "interest", "orcid", "doi", "poridhi", "brain station",
-        "intern", "hackathon", "competition", "conference", "ieee", "acl",
-        "semeval", "televerse", "arobot", "rickshaw", "bistro", "sensor",
-        "iot", "embedded", "extracurricular", "volunteer", "club", "society",
-        "training", "trainee", "supervisor",
+    # Natural profile follow-ups such as "what does he do?" are valid.
+    profile_patterns = (
+        r"^what\s+does\s+(?:he|junayed)\s+do$",
+        r"^who\s+is\s+(?:he|junayed|muhammad junayed)$",
+        r"^tell\s+me\s+about\s+(?:him|junayed|muhammad junayed)$",
+        r"^describe\s+(?:him|junayed|muhammad junayed)$",
+        r"^what\s+is\s+his\s+background$",
     )
-    if any(
-        _contains_term(message_lower, term)
-        for term in strong_portfolio_terms
+    if any(re.match(pattern, normalized) for pattern in profile_patterns):
+        return False
+
+    if person_reference and any(
+        _contains_term(normalized, term)
+        for term in (
+            "work",
+            "works",
+            "working",
+            "do",
+            "does",
+            "background",
+            "about",
+            "live",
+            "lives",
+            "based",
+            "from",
+            "study",
+            "studies",
+            "built",
+            "created",
+        )
     ):
         return False
 
-    # Ambiguous biographical/location words count only when the question
-    # explicitly refers to Junayed.
-    person_dependent_terms = (
-        "who", "about", "work", "works", "working", "built", "made",
-        "created", "live", "lives", "located", "home", "city", "country",
-        "place", "from", "based",
-    )
-    if has_person_reference and any(
-        _contains_term(message_lower, term)
-        for term in person_dependent_terms
-    ):
-        return False
+    if any(_contains_term(normalized, term) for term in OFF_TOPIC_KEYWORDS):
+        return True
 
-    # Mentioning Junayed by name is enough; a bare pronoun is not.
-    if _contains_term(message_lower, "junayed"):
-        return False
-    if _contains_term(message_lower, "muhammad junayed"):
+    # A name reference remains portfolio-related; a bare pronoun does not.
+    if _contains_term(normalized, "junayed") or _contains_term(
+        normalized,
+        "muhammad junayed",
+    ):
         return False
 
     return True
 
-def _clean_context_for_llm(context: str) -> str:
-    """Prepare retrieved PDF text without deleting useful portfolio facts.
 
-    This knowledge base is intentionally structured with many bullet-based
-    ``Label: Value`` records. Those records contain essential facts such as
-    CGPA, dates, roles, repositories, ranks, scores, and contact information,
-    so they must remain available to the language model. Only internal IDs,
-    raw formatting artifacts, keyword dumps, and unsupported-claim guidance
-    are removed.
-    """
+def _detect_intent(
+    message: str,
+    conversation_history: Optional[Sequence[Dict[str, Any]]] = None,
+) -> IntentResult:
+    resolved_message = _resolve_follow_up(message, conversation_history)
+    normalized = _normalize_text(resolved_message)
+
+    project_match = _find_alias(normalized, PROJECT_ALIASES)
+    if project_match:
+        return IntentResult(
+            INTENT_PROJECT_SPECIFIC,
+            section_number=project_match[0],
+            entity_name=project_match[1],
+        )
+
+    research_match = _find_alias(normalized, RESEARCH_ALIASES)
+    if research_match:
+        return IntentResult(
+            INTENT_RESEARCH_SPECIFIC,
+            section_number=research_match[0],
+            entity_name=research_match[1],
+        )
+
+    # Specific facts before broad categories.
+    if any(_contains_term(normalized, term) for term in ("cgpa", "gpa")):
+        return IntentResult(INTENT_CGPA)
+
+    if any(
+        _contains_term(normalized, term)
+        for term in (
+            "linkedin",
+            "github",
+            "google scholar",
+            "orcid",
+            "portfolio website",
+            "email",
+            "contact",
+            "phone",
+            "mobile",
+        )
+    ):
+        return IntentResult(INTENT_CONTACT)
+
+    if any(
+        _contains_term(normalized, term)
+        for term in ("thesis", "dissertation", "research topic", "supervisor")
+    ):
+        return IntentResult(INTENT_THESIS)
+
+    # Research must be checked before project/work.
+    if any(
+        _contains_term(normalized, term)
+        for term in (
+            "research",
+            "research work",
+            "publication",
+            "publications",
+            "paper",
+            "papers",
+            "conference work",
+        )
+    ):
+        return IntentResult(INTENT_RESEARCH_SUMMARY)
+
+    if any(
+        _contains_term(normalized, term)
+        for term in (
+            "projects",
+            "project summary",
+            "portfolio projects",
+            "what has he built",
+            "what did he build",
+            "things he built",
+            "applications he developed",
+        )
+    ):
+        return IntentResult(INTENT_PROJECT_SUMMARY)
+
+    if any(
+        _contains_term(normalized, term)
+        for term in (
+            "experience",
+            "work experience",
+            "employment",
+            "internship",
+            "intern",
+            "worked",
+            "job",
+            "industrial trainee",
+        )
+    ):
+        return IntentResult(INTENT_EXPERIENCE)
+
+    if any(
+        _contains_term(normalized, term)
+        for term in (
+            "skills",
+            "technical skill",
+            "tech stack",
+            "technologies he knows",
+            "programming languages",
+            "frameworks",
+            "tools",
+        )
+    ):
+        return IntentResult(INTENT_SKILLS)
+
+    if any(
+        _contains_term(normalized, term)
+        for term in (
+            "education",
+            "degree",
+            "academic background",
+            "university",
+            "ssc",
+            "hsc",
+        )
+    ):
+        return IntentResult(INTENT_EDUCATION)
+
+    if any(
+        _contains_term(normalized, term)
+        for term in ("award", "awards", "achievement", "achievements", "prize")
+    ):
+        return IntentResult(INTENT_AWARDS)
+
+    if any(
+        _contains_term(normalized, term)
+        for term in ("language", "languages", "bangla", "english", "speak")
+    ):
+        return IntentResult(INTENT_LANGUAGES)
+
+    if any(
+        _contains_term(normalized, term)
+        for term in ("course", "courses", "coursework", "subjects")
+    ):
+        return IntentResult(INTENT_COURSEWORK)
+
+    if any(
+        _contains_term(normalized, term)
+        for term in (
+            "extracurricular",
+            "leadership",
+            "volunteer",
+            "club",
+            "photographic society",
+            "televerse",
+        )
+    ):
+        return IntentResult(INTENT_EXTRACURRICULAR)
+
+    profile_patterns = (
+        r"^who\s+is\s+",
+        r"^tell\s+me\s+about\s+",
+        r"^what\s+does\s+(?:he|junayed)\s+do$",
+        r"^describe\s+",
+        r"background",
+        r"professional profile",
+        r"introduce",
+    )
+    if any(re.search(pattern, normalized) for pattern in profile_patterns):
+        return IntentResult(INTENT_PROFILE)
+
+    if any(
+        _contains_term(normalized, term)
+        for term in ("junayed", "muhammad junayed")
+    ):
+        return IntentResult(INTENT_PROFILE)
+
+    return IntentResult(INTENT_GENERAL)
+
+
+# ---------------------------------------------------------------------------
+# Retrieval
+# ---------------------------------------------------------------------------
+
+def _deduplicate_results(results: Iterable[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    deduplicated: List[Dict[str, Any]] = []
+    seen: set[str] = set()
+
+    for result in results:
+        doc_id = str(result.get("doc_id") or "")
+        metadata = result.get("metadata") or {}
+        fallback_key = (
+            f"{metadata.get('section_number', '')}:"
+            f"{metadata.get('chunk_index', '')}:"
+            f"{result.get('text', '')[:80]}"
+        )
+        key = doc_id or fallback_key
+        if key in seen:
+            continue
+        seen.add(key)
+        deduplicated.append(result)
+
+    return deduplicated
+
+
+async def _retrieve_for_intent(
+    user_message: str,
+    intent_result: IntentResult,
+) -> List[Dict[str, Any]]:
+    intent = intent_result.intent
+
+    if intent_result.section_number:
+        return await asyncio.to_thread(
+            get_by_section_numbers,
+            [intent_result.section_number],
+        )
+
+    section_numbers = INTENT_SECTION_NUMBERS.get(intent)
+    if section_numbers:
+        return await asyncio.to_thread(
+            get_by_section_numbers,
+            list(section_numbers),
+        )
+
+    if intent == INTENT_PROJECT_SUMMARY:
+        return await asyncio.to_thread(get_by_entity_type, "project")
+
+    if intent == INTENT_SKILLS:
+        return await asyncio.to_thread(get_by_entity_type, "skill")
+
+    if intent == INTENT_AWARDS:
+        return await asyncio.to_thread(get_by_entity_type, "award")
+
+    return await asyncio.to_thread(
+        vector_query,
+        user_message,
+        n_results=6,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Context preparation
+# ---------------------------------------------------------------------------
+
+LIMITATION_HEADERS = {
+    "evaluation limitation",
+    "evaluation information not provided",
+    "evaluation and safety limitations",
+    "thesis limitation in this knowledge source",
+}
+
+BLOCK_HEADERS = {
+    "problem",
+    "research problem",
+    "dataset",
+    "approach",
+    "main methods",
+    "main result",
+    "main finding",
+    "technologies",
+    "technologies and models",
+    "technologies and methods",
+    "functional components",
+    "implementation context",
+    "architecture",
+    "features",
+    "features and architecture",
+    "services",
+    "models",
+    "reported results",
+    "reported result",
+    "reported outcome",
+    "deployment",
+    "outcome",
+    "responsibilities",
+    "evaluated tracks",
+    "models evaluated",
+    "shared-task rankings",
+    "exact f1 results",
+    "hardware",
+    "keywords",
+}
+
+
+def _clean_context_for_llm(context: str) -> str:
+    """Remove internal and unsupported text while preserving portfolio facts."""
     if not context:
         return ""
 
@@ -123,6 +800,20 @@ def _clean_context_for_llm(context: str) -> str:
         .replace("\r\n", "\n")
         .replace("\r", "\n")
     )
+    context = re.sub(r"(?im)^\s*Page\s+\d+(?:\s*/\s*\d+)?\s*$", "", context)
+
+    internal_pattern = re.compile(
+        r"^[\s•◦▪\-*]*(?:Document ID|Source|Chunk ID|Chunk Index)"
+        r"\s*:\s*.*$",
+        re.IGNORECASE,
+    )
+
+    unsupported_starters = (
+        "the following information is not documented",
+        "the following values are not included",
+        "the following are not documented",
+        "no final experiment",
+    )
 
     disclaimer_phrases = (
         "should not infer",
@@ -131,809 +822,921 @@ def _clean_context_for_llm(context: str) -> str:
         "not specified in the provided sources",
         "not included in the source material",
         "should be added only after verification",
-        "do not identify specific",
-        "exact responsibilities are not documented",
-        "chatbot should not",
-        "are not included in the provided sources",
-        "not included in the provided",
-        "these values should be added only",
         "without verified information",
         "unless those details are added to a future verified version",
     )
 
-    limitation_headers = {
-        "evaluation limitation",
-        "evaluation information not provided",
-        "evaluation and safety limitations",
-        "thesis limitation in this knowledge source",
-    }
+    cleaned: List[str] = []
+    skip_until_header = False
+    skip_keywords = False
 
-    internal_label_pattern = re.compile(
-        r"^[\s•◦▪\-*]*(?:Document ID|Source|Chunk ID|Chunk Index)"
-        r"\s*:\s*.*$",
-        re.IGNORECASE,
-    )
-
-    cleaned_lines = []
-    skip_limitation_block = False
-    skip_keyword_block = False
-
-    for raw_line in context.split("\n"):
-        stripped = raw_line.strip()
-
-        if not stripped:
-            if cleaned_lines and cleaned_lines[-1] != "":
-                cleaned_lines.append("")
+    for raw_line in context.splitlines():
+        line = raw_line.strip()
+        if not line:
+            if cleaned and cleaned[-1] != "":
+                cleaned.append("")
             continue
 
-        lower = stripped.lower().rstrip(":").strip()
+        lower = line.lower().rstrip(":").strip()
 
-        if lower in limitation_headers:
-            skip_limitation_block = True
-            continue
-
-        if skip_limitation_block:
-            if lower == "keywords":
-                skip_limitation_block = False
-                skip_keyword_block = True
+        if lower in LIMITATION_HEADERS:
+            skip_until_header = True
+            skip_keywords = False
             continue
 
         if lower == "keywords":
-            skip_keyword_block = True
+            skip_keywords = True
+            skip_until_header = False
             continue
 
-        if skip_keyword_block:
+        if skip_keywords:
+            # A new retrieved section is marked explicitly by this helper.
+            if line.startswith("[Section:"):
+                skip_keywords = False
+            else:
+                continue
+
+        if any(lower.startswith(starter) for starter in unsupported_starters):
+            skip_until_header = True
             continue
 
-        if internal_label_pattern.match(stripped):
+        if skip_until_header:
+            if lower in BLOCK_HEADERS and lower not in LIMITATION_HEADERS:
+                skip_until_header = False
+                if lower == "keywords":
+                    skip_keywords = True
+                else:
+                    cleaned.append(line)
+            continue
+
+        if internal_pattern.match(line):
             continue
 
         if any(phrase in lower for phrase in disclaimer_phrases):
             continue
 
-        if lower in {
-            "information not provided",
-            "the following information is not documented in the provided sources",
-            "the following values are not included in the source material",
-            "the following are not documented",
-        }:
-            continue
+        line = re.sub(r"^[•◦▪]\s*", "", line)
+        line = re.sub(r"^[*-]\s+(?=[A-Za-z0-9])", "", line)
+        line = re.sub(r"(?<=[A-Za-z])\s*-\s*(?=[a-z])", "-", line)
+        line = re.sub(r"\s+", " ", line).strip()
 
-        stripped = re.sub(r"^[•◦▪]\s*", "", stripped)
-        stripped = re.sub(r"^[*-]\s+(?=[A-Za-z])", "", stripped)
+        if line:
+            cleaned.append(line)
 
-        if stripped:
-            cleaned_lines.append(stripped)
-
-    result = "\n".join(cleaned_lines)
-    result = re.sub(r"[ \t]+\n", "\n", result)
+    result = "\n".join(cleaned)
     result = re.sub(r"\n{3,}", "\n\n", result)
     return result.strip()
 
 
-async def generate_response(user_message: str) -> dict:
-    """Generate a response using RAG: query vector store for context, then call HuggingFace."""
-    # Handle greetings directly (before off-topic check)
-    greeting_words = {"hello", "hi", "hey", "greetings", "howdy", "hola", "yo", "sup", "good morning", "good evening", "good afternoon"}
-    stripped = re.sub(r'[^\w\s]', '', user_message.lower()).strip()
-    if stripped in greeting_words or stripped.startswith(("hi ", "hey ", "hello ")):
-        return {
-            "response": (
-                "Hello! I'm Muhammad Junayed's AI assistant. "
-                "I can tell you about his projects, skills, research, and experience. "
-                "What would you like to know?"
-            ),
-            "sources": [],
-        }
- 
-    # Retrieve relevant context from vector store (5 chunks for better coverage)
-    results = vector_query(user_message, n_results=5)
- 
-    # Build context from retrieved chunks (no section labels - they leak into responses)
-    context_parts = []
-    for r in results:
-        text = r.get("text", "").strip()
-        if text:
-            context_parts.append(text)
-    
-    context = "\n\n".join(context_parts) if context_parts else "No specific context available."
- 
-    sources = [r["metadata"].get("source", "profile") for r in results if r.get("metadata")]
- 
-    # Clean context to remove metadata before sending to LLM or fallback
-    clean_context = _clean_context_for_llm(context)
- 
-    # If no HF API token, return a fallback response
-    if not settings.HF_API_TOKEN:
-        logger.warning(
-            "HF_API_TOKEN is not set - using fallback response. "
-            "Set HF_API_TOKEN environment variable to enable AI-generated responses."
-        )
-        return {
-            "response": _generate_fallback_response(user_message, clean_context),
-            "sources": list(set(sources)),
-        }
- 
-    # Quick off-topic detection for clearly irrelevant questions (saves API calls)
-    message_lower = user_message.lower()
-    if any(kw in message_lower for kw in OFF_TOPIC_KEYWORDS):
-        return {
-            "response": (
-                "I'm specifically designed to answer questions about Muhammad Junayed — "
-                "his skills, projects, research, experience, and background. "
-                "I can't help with general questions outside his portfolio. "
-                "What would you like to know about him?"
-            ),
-            "sources": [],
-        }
- 
-    # Call HuggingFace Inference API
-    prompt = _build_prompt(user_message, clean_context)
-    try:
-        response_text = await _call_hf_api(prompt)
-        logger.info("Successfully generated response via HF API for query: %s", user_message[:80])
-    except Exception as e:
-        logger.warning(
-            "HF API call failed (attempt 1), retrying in 2 seconds. Error: %s | Query: %s",
-            str(e),
-            user_message[:80],
-        )
-        # Retry once after a 2-second delay for transient failures.
-        # NOTE: Worst-case latency budget: _call_hf_api has internal 503 retry with 5s sleep,
-        # so a single request path can take up to: 45s (first timeout) + 2s (sleep) +
-        # 20s (retry timeout) = ~67s before falling back. With the 503 internal retry,
-        # this could reach 45+5+45 + 2 + 20+5+20 = ~142s in the absolute worst case.
-        # A full circuit breaker is not implemented, but the shorter retry timeout (20s)
-        # limits the added latency from the retry attempt.
+def _metadata_section(result: Dict[str, Any]) -> str:
+    metadata = result.get("metadata") or {}
+    return str(metadata.get("section") or "Relevant portfolio information")
+
+
+def _result_sort_key(result: Dict[str, Any]) -> Tuple[int, ...]:
+    metadata = result.get("metadata") or {}
+    section_number = str(metadata.get("section_number") or "999")
+    values: List[int] = []
+    for part in section_number.split("."):
         try:
-            await asyncio.sleep(2)
-            response_text = await _call_hf_api(prompt, timeout=20.0)
-            logger.info("Successfully generated response via HF API on retry for query: %s", user_message[:80])
-        except Exception as retry_e:
-            logger.error(
-                "HF API retry also failed, using fallback. Error: %s | Model: %s | Query: %s",
-                str(retry_e),
-                settings.HF_MODEL_ID,
-                user_message[:80],
-            )
-            response_text = _generate_fallback_response(user_message, clean_context)
- 
-    return {
-        "response": response_text,
-        "sources": list(set(sources)),
-    }
- 
- 
-def _build_prompt(user_message: str, context: str) -> str:
-    system = SYSTEM_PROMPT.format(context=context)
-    return f"<s>[INST] {system}\n\nUser question: {user_message} [/INST]"
- 
- 
-def _clean_response(text: str) -> str:
-    """Post-process LLM response to remove artifacts and ensure quality."""
-    if not text:
-        return "I apologize, but I could not generate a proper response. Please try asking your question in a different way."
- 
-    # Remove instruction artifacts
-    artifacts = ["[INST]", "[/INST]", "</s>", "<s>", "<<SYS>>", "<</SYS>>", "<|", "|>"]
-    for artifact in artifacts:
-        text = text.replace(artifact, "")
- 
-    # Remove cases where the model echoes back the system prompt
-    # Look for the system prompt signature and remove everything before the actual answer
-    system_prompt_markers = [
-        "You are a friendly, conversational AI assistant",
-        "You are Muhammad Junayed's portfolio assistant",
-        "Context from knowledge base:",
-        "User question:",
-        "Guidelines:",
-        "Rules:",
-    ]
-    for marker in system_prompt_markers:
-        if marker in text:
-            # Find the last occurrence and take everything after it
-            idx = text.rfind(marker)
-            # Find the end of this echoed section (next newline after some content)
-            remaining = text[idx:]
-            newline_idx = remaining.find("\n\n")
-            if newline_idx > 0:
-                text = remaining[newline_idx:].strip()
-            else:
-                text = ""
- 
-    # Remove section headers used as prefixes while preserving the answer text.
-    section_headers = (
-        r"Research Problem|Approach|Dataset|Images|Keywords|Key Contributions|"
-        r"Methodology|Results|Conclusion|Individual Contribution|"
-        r"Evaluation Limitation|Main Finding|Evaluated Tracks|Models Evaluated|"
-        r"Shared-Task Rankings|Exact F1 Results|Main Result"
+            values.append(int(part))
+        except ValueError:
+            values.append(999)
+    values.append(int(metadata.get("chunk_index") or 0))
+    return tuple(values)
+
+
+def _extract_label(text: str, label: str) -> Optional[str]:
+    pattern = re.compile(
+        rf"(?im)^\s*[•◦▪\-*]?\s*{re.escape(label)}\s*:\s*(.+?)\s*$"
     )
+    match = pattern.search(text)
+    return match.group(1).strip() if match else None
+
+
+def _extract_block(text: str, header_names: Sequence[str]) -> str:
+    lines = text.splitlines()
+    normalized_headers = {header.lower() for header in header_names}
+    start: Optional[int] = None
+    collected: List[str] = []
+
+    for index, raw_line in enumerate(lines):
+        line = raw_line.strip()
+        lower = line.lower().rstrip(":").strip()
+
+        if start is None:
+            if lower in normalized_headers:
+                start = index + 1
+            continue
+
+        if lower in BLOCK_HEADERS or re.match(r"^\d+(?:\.\d+)*\.?\s+", line):
+            break
+
+        if line:
+            line = re.sub(r"^[•◦▪]\s*", "", line)
+            collected.append(line)
+
+    return " ".join(collected).strip()
+
+
+def _extract_block_items(
+    text: str,
+    header_names: Sequence[str],
+) -> List[str]:
+    """Extract bullet/list items under a structural header."""
+    lines = text.splitlines()
+    normalized_headers = {header.lower() for header in header_names}
+    start: Optional[int] = None
+    items: List[str] = []
+
+    for index, raw_line in enumerate(lines):
+        line = raw_line.strip()
+        lower = line.lower().rstrip(":").strip()
+
+        if start is None:
+            if lower in normalized_headers:
+                start = index + 1
+            continue
+
+        if lower in BLOCK_HEADERS or re.match(r"^\d+(?:\.\d+)*\.?\s+", line):
+            break
+
+        if not line:
+            continue
+
+        cleaned = re.sub(r"^[•◦▪\-*]\s*", "", line).strip()
+        if cleaned:
+            items.append(cleaned)
+
+    return items
+
+
+def _first_sentences(text: str, limit: int = 1) -> str:
+    cleaned = re.sub(r"\s+", " ", text).strip()
+    sentences = [
+        sentence.strip()
+        for sentence in re.split(r"(?<=[.!?])\s+", cleaned)
+        if sentence.strip()
+    ]
+    return " ".join(sentences[:limit])
+
+
+def _compact_result(
+    result: Dict[str, Any],
+    intent: str,
+) -> str:
+    raw_text = str(result.get("text") or "")
+    section = _metadata_section(result)
+    clean_text = _clean_context_for_llm(raw_text)
+
+    if intent == INTENT_PROJECT_SUMMARY:
+        project_type = _extract_label(raw_text, "Project type")
+        problem = _extract_block(raw_text, ("Problem",))
+        outcome = _extract_block(raw_text, ("Outcome", "Reported Outcome"))
+        fields = [f"Project: {section}"]
+        if project_type:
+            fields.append(f"Type: {project_type}")
+        if problem:
+            fields.append(f"Purpose: {_first_sentences(problem, 1)}")
+        if outcome:
+            fields.append(f"Outcome: {_first_sentences(outcome, 1)}")
+        return "\n".join(fields)
+
+    if intent == INTENT_RESEARCH_SUMMARY:
+        title = _extract_label(raw_text, "Title") or section
+        research_problem = _extract_block(raw_text, ("Research Problem", "Problem"))
+        approach = _extract_block(raw_text, ("Approach", "Proposed Research Direction"))
+        result = _extract_block(
+            raw_text,
+            ("Main Result", "Main Finding", "Reported Result"),
+        )
+        fields = [f"Research item: {title}"]
+        if research_problem:
+            fields.append(f"Problem: {_first_sentences(research_problem, 1)}")
+        if approach:
+            fields.append(f"Method: {_first_sentences(approach, 1)}")
+        if result:
+            fields.append(f"Verified result/finding: {_first_sentences(result, 1)}")
+        return "\n".join(fields)
+
+    return f"[Section: {section}]\n{clean_text}".strip()
+
+
+def _prepare_context(
+    results: Sequence[Dict[str, Any]],
+    intent: str,
+) -> str:
+    parts: List[str] = []
+
+    for result in sorted(_deduplicate_results(results), key=_result_sort_key):
+        compact = _compact_result(result, intent)
+        if compact:
+            parts.append(compact)
+
+    return "\n\n---\n\n".join(parts) if parts else "No specific context available."
+
+
+# ---------------------------------------------------------------------------
+# Prompt and generated-response cleaning
+# ---------------------------------------------------------------------------
+
+def _build_prompt(
+    user_message: str,
+    context: str,
+    intent: str = INTENT_GENERAL,
+) -> str:
+    instruction = INTENT_INSTRUCTIONS.get(
+        intent,
+        INTENT_INSTRUCTIONS[INTENT_GENERAL],
+    )
+    system = SYSTEM_PROMPT.format(
+        intent_instruction=instruction,
+        context=context,
+    )
+    return f"<s>[INST] {system}\n\nUser question: {user_message} [/INST]"
+
+
+def _clean_response(text: str) -> str:
+    if not text:
+        return NO_INFORMATION_RESPONSE
+
+    for artifact in (
+        "[INST]",
+        "[/INST]",
+        "</s>",
+        "<s>",
+        "<<SYS>>",
+        "<</SYS>>",
+        "<|",
+        "|>",
+    ):
+        text = text.replace(artifact, "")
+
     text = re.sub(
-        rf"^\s*(?:{section_headers})\s*:?\s+(?=\S)",
+        r"(?im)^\s*Page\s+\d+(?:\s*/\s*\d+)?\s*$",
         "",
         text,
-        flags=re.MULTILINE | re.IGNORECASE,
     )
-
-    # Remove ANY line matching "Label: value" metadata pattern (with or without bullet)
-    # This catches Document ID, Authors, Conference, DOI, Publisher, Pages, etc.
-    metadata_labels = (
-        r"Document ID|Authors?|Conference|Publisher|DOI link|DOI|Pages?|"
-        r"Code repository|Publication date|Conference abbreviation|"
-        r"Conference location|Team|Venue|Workshop abbreviation|"
-        r"Official paper link|Muhammad Junayed's author position|"
-        r"Employment type|Duration|Organization|Role|"
-        r"Target classes|Target|Dataset|Common abbreviation|Common|"
-        r"Training type|Evaluation|Main|Shared|Exact|Individual|"
-        r"Comparison|Per-|Error"
-    )
-    # Remove lines with metadata labels (with or without bullet prefix)
+    text = re.sub(r"\[Section:[^\]]+\]\s*", "", text, flags=re.IGNORECASE)
     text = re.sub(
-        r'^[\s•◦▪\-*]*(?:' + metadata_labels + r')[^:\n]{0,40}:\s*[^\n]*\n?',
-        '', text, flags=re.MULTILINE | re.IGNORECASE
-    )
- 
-    # Remove section headers appearing alone on a line.
-    text = re.sub(
-        rf'^\s*(?:{section_headers})\s*:?\s*$',
-        '',
+        r"(?im)^\s*(?:Professional Profile|Selected Projects|"
+        r"Research and Publications|Work Experience|Technical Skills|"
+        r"Education|Personal and Professional Information)\s*:?\s*",
+        "",
         text,
-        flags=re.MULTILINE | re.IGNORECASE,
+    )
+    text = re.sub(
+        r"(?im)^\s*(?:Research Problem|Problem|Approach|Dataset|"
+        r"Technologies|Functional Components|Implementation Context|"
+        r"Architecture|Features|Outcome|Main Result|Main Finding|"
+        r"Reported Result|Reported Outcome)\s*:?\s*",
+        "",
+        text,
+    )
+    text = re.sub(
+        r"(?im)^\s*(?:Document ID|Source|Chunk ID|Chunk Index)\s*:\s*.*$",
+        "",
+        text,
+    )
+    text = re.sub(
+        r"Muhammad_Junayed_RAG_Knowledge_Base(?:\(1\))?\.pdf",
+        "",
+        text,
+        flags=re.IGNORECASE,
     )
 
-    # Remove "Sources:" lines and source filenames
-    text = re.sub(r'^[\s•◦▪\-*]*Sources?:?\s*[^\n]*$', '', text, flags=re.MULTILINE | re.IGNORECASE)
-    text = re.sub(r'Muhammad_Junayed_RAG_Knowledge_Base\.pdf', '', text)
- 
-    # Remove any remaining bullet points (lines starting with bullet chars)
-    # The LLM should NEVER output bullet points - all such lines are metadata artifacts
-    text = re.sub(r'^\s*[•◦▪]\s*[^\n]*$', '', text, flags=re.MULTILINE)
-    # Remove dashes/asterisks used as bullets ONLY when the line also looks like metadata
-    # (contains a colon pattern or is a short label-like item <= 60 chars).
-    # This avoids stripping legitimate LLM prose that starts with "- " for emphasis.
-    text = re.sub(
-        r'^\s*[-*]\s+(?=[^\n]{0,60}:[^\n]*$)[^\n]*$',
-        '', text, flags=re.MULTILINE
-    )
-    # Also remove short dash-bullet lines (<=60 chars total, no sentence-ending punctuation)
-    # which are likely list items rather than prose
-    text = re.sub(
-        r'^\s*[-*]\s+[^\n.!?]{0,55}$',
-        '', text, flags=re.MULTILINE
-    )
- 
-    # Remove "[Section: ...]" if still present
-    text = re.sub(r'\[Section:[^\]]*\]', '', text)
-    # Remove "Information Not Provided" blocks
-    text = re.sub(r'Information Not Provided[^\n]*', '', text, flags=re.IGNORECASE)
-    # Remove standalone "Images" artifact
-    text = re.sub(r'^\s*Images\s*$', '', text, flags=re.MULTILINE)
-    # Remove "Keywords ..." lines
-    text = re.sub(r'Keywords\s+[\w;,\s]+\.?\s*', '', text)
-    # Remove standalone URLs
-    text = re.sub(r'^\s*https?://[^\s]+\s*$', '', text, flags=re.MULTILINE)
- 
-    # Remove leaked disclaimer/instruction sentences from generated prose.
-    response_disclaimer_phrases = (
+    disclaimer_phrases = (
         "should not infer",
         "should not assign",
         "not documented in the provided sources",
         "not specified in the provided sources",
         "not included in the source material",
         "should be added only after verification",
-        "do not identify specific",
-        "exact responsibilities are not documented",
-        "chatbot should not",
-        "are not included in the provided sources",
-        "not included in the provided",
-        "these values should be added only",
         "without verified information",
     )
-    response_sentences = re.split(r'(?<=[.!?])\s+', text)
-    text = " ".join(
+    sentences = re.split(r"(?<=[.!?])\s+", text)
+    sentences = [
         sentence.strip()
-        for sentence in response_sentences
+        for sentence in sentences
         if sentence.strip()
         and not any(
             phrase in sentence.lower()
-            for phrase in response_disclaimer_phrases
+            for phrase in disclaimer_phrases
         )
-    )
+    ]
 
-    # Collapse multiple newlines into max 2
-    text = re.sub(r'\n{3,}', '\n\n', text)
- 
-    # Strip leading/trailing whitespace
-    text = text.strip()
- 
-    # Remove repeated sentences (keep only first occurrence)
-    sentences = re.split(r'(?<=[.!?])\s+', text)
-    seen = set()
-    unique_sentences = []
+    unique: List[str] = []
+    seen: set[str] = set()
     for sentence in sentences:
-        normalized = sentence.strip().lower()
-        if normalized and normalized not in seen:
+        sentence = re.sub(r"(?<=[A-Za-z])\s*-\s*(?=[a-z])", "-", sentence)
+        sentence = re.sub(r"\s+", " ", sentence).strip(" -\n\t")
+        normalized = sentence.lower()
+        if sentence and normalized not in seen:
             seen.add(normalized)
-            unique_sentences.append(sentence.strip())
-    text = " ".join(unique_sentences)
- 
-    # Truncate to max 1000 characters at a sentence boundary
-    if len(text) > 1000:
-        truncated = text[:1000]
-        # Find the last sentence boundary
-        last_boundary = max(
+            unique.append(sentence)
+
+    response = " ".join(unique).strip()
+    if not response:
+        return NO_INFORMATION_RESPONSE
+
+    if len(response) > 1400:
+        truncated = response[:1400]
+        boundary = max(
             truncated.rfind(". "),
             truncated.rfind("! "),
             truncated.rfind("? "),
-            truncated.rfind(".\n"),
         )
-        if last_boundary > 200:
-            text = truncated[:last_boundary + 1]
-        else:
-            # Try to cut at a period at the end
-            last_period = truncated.rfind(".")
-            if last_period > 200:
-                text = truncated[:last_period + 1]
-            else:
-                text = truncated.strip()
- 
-    # If response is empty after cleaning, return graceful fallback
-    if not text.strip():
-        return "I apologize, but I could not generate a proper response. Please try asking your question in a different way."
- 
-    return text.strip()
- 
- 
-async def _call_hf_api(prompt: str, timeout: float = 45.0) -> str:
+        response = (
+            truncated[: boundary + 1]
+            if boundary > 300
+            else truncated.rstrip()
+        )
+
+    return response
+
+
+# ---------------------------------------------------------------------------
+# Hugging Face API
+# ---------------------------------------------------------------------------
+
+async def _call_hf_api(
+    prompt: str,
+    timeout: float = 35.0,
+) -> str:
     url = f"https://api-inference.huggingface.co/models/{settings.HF_MODEL_ID}"
     headers = {"Authorization": f"Bearer {settings.HF_API_TOKEN}"}
     payload = {
         "inputs": prompt,
         "parameters": {
-            "max_new_tokens": 300,
-            "temperature": 0.4,
+            "max_new_tokens": 420,
+            "temperature": 0.2,
+            "top_p": 0.9,
+            "repetition_penalty": 1.08,
             "return_full_text": False,
         },
     }
- 
+
     async with httpx.AsyncClient(timeout=timeout) as client:
         response = await client.post(url, json=payload, headers=headers)
- 
-        # Handle rate limiting
+
         if response.status_code == 429:
-            raise Exception(
-                "Rate limited by HuggingFace API. Please wait a moment and try again."
-            )
- 
-        # Handle model loading (503) with retry
+            raise RuntimeError("Hugging Face API rate limit reached.")
+
         if response.status_code == 503:
-            logger.warning("Model is loading (503), retrying in 5 seconds...")
-            await asyncio.sleep(5)
+            await asyncio.sleep(4)
             response = await client.post(url, json=payload, headers=headers)
-            if response.status_code != 200:
-                error_detail = response.text[:300]
-                logger.error(
-                    "HF API retry failed with status %d: %s (model: %s)",
-                    response.status_code,
-                    error_detail,
-                    settings.HF_MODEL_ID,
-                )
-                response.raise_for_status()
-        elif response.status_code != 200:
-            # Check if JSON error mentions "loading"
+
+        if response.status_code != 200:
             try:
-                error_json = response.json()
-                error_msg = str(error_json.get("error", ""))
-                if "loading" in error_msg.lower():
-                    logger.warning("Model is loading (from error message), retrying in 5 seconds...")
-                    await asyncio.sleep(5)
-                    response = await client.post(url, json=payload, headers=headers)
-                    if response.status_code != 200:
-                        error_detail = response.text[:300]
-                        logger.error(
-                            "HF API retry failed with status %d: %s (model: %s)",
-                            response.status_code,
-                            error_detail,
-                            settings.HF_MODEL_ID,
-                        )
-                        response.raise_for_status()
-                else:
-                    error_detail = response.text[:300]
-                    logger.error(
-                        "HF API returned status %d: %s (model: %s)",
-                        response.status_code,
-                        error_detail,
-                        settings.HF_MODEL_ID,
-                    )
-                    response.raise_for_status()
-            except (ValueError, KeyError):
-                error_detail = response.text[:300]
-                logger.error(
-                    "HF API returned status %d: %s (model: %s)",
-                    response.status_code,
-                    error_detail,
-                    settings.HF_MODEL_ID,
-                )
-                response.raise_for_status()
- 
+                error_message = str(response.json().get("error", ""))
+            except (ValueError, AttributeError):
+                error_message = response.text[:300]
+
+            if "loading" in error_message.lower():
+                await asyncio.sleep(4)
+                response = await client.post(url, json=payload, headers=headers)
+
+            response.raise_for_status()
+
         result = response.json()
- 
-    if isinstance(result, list) and len(result) > 0:
-        generated = result[0].get("generated_text", "").strip()
+
+    if isinstance(result, list) and result:
+        generated = str(result[0].get("generated_text") or "").strip()
         return _clean_response(generated)
-    logger.warning("HF API returned unexpected response format: %s", str(result)[:200])
-    return "I apologize, but I could not generate a response at this time."
- 
- 
-def _extract_urls(text: str) -> dict:
-    """Extract labeled URLs from context text."""
-    urls = {}
-    # Match patterns like "LinkedIn - URL" or "GitHub - URL"
-    url_patterns = re.findall(
-        r'(\w[\w\s]*?)\s*[-:]\s*(https?://[^\s,]+)', text
-    )
-    for label, url in url_patterns:
-        urls[label.strip().lower()] = url.strip().rstrip(",.")
-    # Also find standalone URLs
-    standalone = re.findall(r'https?://[^\s,]+', text)
-    for url in standalone:
-        url_clean = url.strip().rstrip(",.")
-        if "linkedin" in url_clean.lower() and "linkedin" not in urls:
-            urls["linkedin"] = url_clean
-        elif "github" in url_clean.lower() and "github" not in urls:
-            urls["github"] = url_clean
-        elif "kaggle" in url_clean.lower() and "kaggle" not in urls:
-            urls["kaggle"] = url_clean
-        elif "scholar" in url_clean.lower() and "scholar" not in urls:
-            urls["scholar"] = url_clean
+
+    if isinstance(result, dict) and "generated_text" in result:
+        return _clean_response(str(result["generated_text"]))
+
+    logger.warning("Unexpected Hugging Face response: %s", str(result)[:300])
+    return NO_INFORMATION_RESPONSE
+
+
+# ---------------------------------------------------------------------------
+# Deterministic fallback formatting
+# ---------------------------------------------------------------------------
+
+def _extract_urls(text: str) -> Dict[str, str]:
+    urls: Dict[str, str] = {}
+    for label, url in re.findall(
+        r"(?im)^\s*[•◦▪\-*]?\s*([A-Za-z][A-Za-z ]+?)\s*:\s*"
+        r"(https?://[^\s]+)",
+        text,
+    ):
+        urls[label.strip().lower()] = url.rstrip(".,)")
+
+    for url in re.findall(r"https?://[^\s]+", text):
+        clean = url.rstrip(".,)")
+        lower = clean.lower()
+        if "linkedin" in lower:
+            urls.setdefault("linkedin", clean)
+        elif "github" in lower:
+            urls.setdefault("github", clean)
+        elif "scholar" in lower:
+            urls.setdefault("google scholar", clean)
+        elif "orcid" in lower:
+            urls.setdefault("orcid", clean)
+        elif "muhammadjunayed.vercel.app" in lower:
+            urls.setdefault("portfolio website", clean)
+
     return urls
- 
- 
+
+
 def _extract_email(text: str) -> Optional[str]:
-    """Extract email address from context text."""
-    match = re.search(r'[\w.+-]+@[\w-]+\.[\w.-]+', text)
+    match = re.search(r"[\w.+-]+@[\w-]+\.[\w.-]+", text)
     return match.group(0) if match else None
- 
- 
-def _generate_fallback_response(user_message: str, context: str) -> str:
-    """Generate a structured, intelligent response from retrieved context when HF API is not available."""
-    message_lower = user_message.lower().strip()
- 
-    # Handle greetings ONLY when the entire message is a greeting (not part of a longer question)
-    greeting_words = {"hello", "hi", "hey", "greetings", "howdy", "hola", "yo", "sup", "good morning", "good evening", "good afternoon"}
-    # Strip punctuation for comparison
-    stripped_message = re.sub(r'[^\w\s]', '', message_lower).strip()
-    if stripped_message in greeting_words or stripped_message.startswith(("hi ", "hey ", "hello ")):
-        return (
-            "Hello! I'm Muhammad Junayed's AI assistant. "
-            "I can tell you about his projects, skills, research, and experience. "
-            "What would you like to know?"
-        )
- 
-    # Detect off-topic questions
-    if _is_off_topic(user_message):
-        return (
-            "I'm specifically designed to answer questions about Muhammad Junayed — "
-            "his skills, projects, research, experience, and background. "
-            "I can't help with general questions outside his portfolio. "
-            "What would you like to know about him?"
-        )
- 
-    # If no meaningful context, check keyword-based answers first before giving generic response
-    # Handle common keyword-based questions regardless of vector store results
- 
-    # LinkedIn requests
-    if "linkedin" in message_lower:
-        urls = _extract_urls(context) if context and context != "No specific context available." else {}
-        if "linkedin" in urls:
-            return f"Here is Muhammad Junayed's LinkedIn profile: {urls['linkedin']}"
-        return (
-            "Muhammad Junayed's LinkedIn profile is: "
-            "https://www.linkedin.com/in/muhammad-junayed-ete20/"
-        )
- 
-    # GitHub requests
-    if "github" in message_lower:
-        urls = _extract_urls(context) if context and context != "No specific context available." else {}
-        if "github" in urls:
-            return f"Here is Muhammad Junayed's GitHub profile: {urls['github']}"
-        return (
-            "Muhammad Junayed's GitHub profile is: "
-            "https://github.com/MD-Junayed000"
-        )
- 
-    # Kaggle requests
-    if "kaggle" in message_lower:
-        urls = _extract_urls(context) if context and context != "No specific context available." else {}
-        if "kaggle" in urls:
-            return f"Here is Muhammad Junayed's Kaggle profile: {urls['kaggle']}"
-        return (
-            "Muhammad Junayed's Kaggle profile is: "
-            "https://www.kaggle.com/muhammedjunayed"
-        )
- 
-    # Google Scholar requests
-    if "scholar" in message_lower or "google scholar" in message_lower:
-        urls = _extract_urls(context) if context and context != "No specific context available." else {}
-        if "scholar" in urls:
-            return f"Here is Muhammad Junayed's Google Scholar profile: {urls['scholar']}"
-        return (
-            "Muhammad Junayed's Google Scholar profile is: "
-            "https://scholar.google.com/citations?user=wObQzNsAAAAJ&hl=en"
-        )
- 
-    # Address/location requests
-    if any(word in message_lower for word in ["address", "location", "live", "based", "home"]) and not any(w in message_lower for w in ["work", "job", "company", "employ"]):
-        # Check context for address info
-        if context and context != "No specific context available.":
-            address_match = re.search(r'address[:\s-]+([^\n,]+)', context, re.IGNORECASE)
-            if address_match:
-                return f"Muhammad Junayed's address is: {address_match.group(1).strip()}"
-        return (
-            "Muhammad Junayed is based in Bangladesh. He is a final-year ETE student at "
-            "Chittagong University of Engineering & Technology (CUET)."
-        )
- 
-    # Phone requests
-    if any(word in message_lower for word in ["phone", "call", "number", "mobile"]):
-        if context and context != "No specific context available.":
-            phone_match = re.search(r'(?:phone|mobile|contact)[:\s-]+([+\d\s()-]+)', context, re.IGNORECASE)
-            if phone_match:
-                return f"Muhammad Junayed's phone number is: {phone_match.group(1).strip()}"
-        return (
-            "For contact information, please use the contact form on this website or "
-            "reach out via email at mdjunayed573@gmail.com"
-        )
- 
-    # Email/contact requests
-    if any(word in message_lower for word in ["email", "mail", "contact", "reach", "how to contact"]):
-        return (
-            "You can contact Muhammad Junayed via:\n"
-            "- Email: mdjunayed573@gmail.com\n"
-            "- LinkedIn: https://www.linkedin.com/in/muhammad-junayed-ete20/\n"
-            "- GitHub: https://github.com/MD-Junayed000\n\n"
-            "Or use the contact form on this website!"
-        )
- 
-    # Achievement/award requests
-    if any(word in message_lower for word in ["achievement", "award", "accomplish", "honor", "recognition"]):
-        if context and context != "No specific context available.":
-            # Try to find achievement-related content in context
-            achievement_sentences = []
-            for sentence in re.split(r'(?<=[.!?])\s+', context):
-                if any(kw in sentence.lower() for kw in ["award", "achiev", "honor", "recogni", "certif", "winner", "first", "best"]):
-                    achievement_sentences.append(sentence.strip())
-            if achievement_sentences:
-                intro = "Here are some of Muhammad Junayed's achievements:\n\n"
-                points = [f"- {s}" for s in achievement_sentences[:5]]
-                return intro + "\n".join(points)
-        return (
-            "Muhammad Junayed's notable achievements include:\n"
-            "- Published research papers at IEEE (ICAEEE 2024) and ACL workshop (BEA 2025)\n"
-            "- B.Sc. thesis on hallucination detection/mitigation in LLMs\n"
-            "- Multiple ML/AI projects including healthcare chatbot and industrial defect recognition\n\n"
-            "Ask about his research or projects for more details!"
-        )
- 
-    # Thesis requests
-    if any(word in message_lower for word in ["thesis", "research topic", "dissertation"]):
-        return (
-            "Muhammad Junayed's undergraduate thesis is titled 'Closing the Loop on RAG Hallucinations: "
-            "Inference-Time Control via Dual Residual-Stream and FFN Activation Probes.' "
-            "It investigates methods for detecting and mitigating hallucinations in large language models "
-            "during inference. His supervisor is Priyonti Paul Tumpa, Assistant Professor at CUET's ETE department. "
-            "The thesis is currently ongoing."
-        )
- 
-    # Education/CGPA requests
-    if any(word in message_lower for word in ["cgpa", "gpa", "grade", "education", "degree", "study"]):
-        return (
-            "Muhammad Junayed is pursuing a B.Sc. in Electronics and Telecommunication Engineering "
-            "at Chittagong University of Engineering and Technology (CUET), Bangladesh. "
-            "He started in March 2022 and is currently in his final year."
-        )
- 
-    # Work/experience requests
-    if any(word in message_lower for word in ["work", "job", "employ", "intern", "company", "experience"]) and not any(w in message_lower for w in ["project", "built", "research", "paper", "publication"]):
-        return (
-            "Muhammad Junayed has worked at:\n"
-            "- Software Engineer Intern at Poridhi.io (cloud-native infrastructure)\n"
-            "- Industrial Trainee at Brain Station 23 PLC (software development)\n\n"
-            "He gained experience in backend engineering, cloud computing, and production software systems."
-        )
- 
-    # Language requests
-    if any(word in message_lower for word in ["language", "speak", "fluent", "bangla", "bengali", "english"]) and not any(w in message_lower for w in ["programming", "code", "python", "javascript"]):
-        return (
-            "Muhammad Junayed speaks:\n"
-            "- Bangla (native language)\n"
-            "- English (professional proficiency)"
-        )
- 
-    # Coursework requests
-    if any(word in message_lower for word in ["course", "coursework", "subject", "class"]):
-        return (
-            "Muhammad Junayed's relevant coursework includes:\n"
-            "- Electronics & Communication: Digital Systems, VLSI, Communication Theory\n"
-            "- Signal Processing: DSP, Control Systems\n"
-            "- Computing: Data Structures, OOP, Computer Architecture\n"
-            "- Mathematics: Linear Algebra, Probability, Numerical Methods"
-        )
- 
-    # If no meaningful context available after keyword checks, return generic response
-    if not context or context == "No specific context available.":
-        return (
-            "I'm Muhammad Junayed's AI portfolio assistant. "
-            "I can help you learn about his projects, skills, research, and background. "
-            "Please ask me something specific!"
-        )
- 
-    # Extract structured information from context
-    urls = _extract_urls(context)
-    email = _extract_email(context)
- 
-    # For general questions, parse context into a structured answer
-    return _build_structured_answer(message_lower, context)
- 
- 
-def _build_structured_answer(question: str, context: str) -> str:
-    """Build a structured, readable answer from context based on the question type."""
-    # Split context into individual chunks for analysis
-    chunks = [c.strip() for c in context.split("\n\n") if c.strip()]
- 
-    # Determine question category and format accordingly
-    if any(word in question for word in ["skill", "tech", "proficient", "know", "stack"]):
-        return _format_skills_answer(chunks)
-    elif any(word in question for word in ["project", "built", "made", "portfolio", "work"]):
-        return _format_projects_answer(chunks)
-    elif any(word in question for word in ["research", "paper", "publication", "thesis"]):
-        return _format_research_answer(chunks)
-    elif any(word in question for word in ["achievement", "award", "accomplish", "honor", "recognition"]):
-        return _format_achievements_answer(chunks)
-    elif any(word in question for word in ["who", "about", "tell me", "introduce", "background"]):
-        return _format_about_answer(chunks)
-    elif any(word in question for word in ["experience", "job", "intern", "company"]):
-        return _format_experience_answer(chunks)
-    else:
-        # General question: present the most relevant context clearly
-        return _format_general_answer(chunks)
- 
- 
-def _format_skills_answer(chunks: list) -> str:
-    """Format a skills-focused answer from context chunks."""
-    skill_info = []
-    for chunk in chunks:
-        if any(kw in chunk.lower() for kw in ["skill", "proficient", "expertise", "uses", "include"]):
-            skill_info.append(chunk)
- 
-    if skill_info:
-        intro = "Here are Muhammad Junayed's technical skills:\n\n"
-        # Extract skill mentions and present them
-        combined = " ".join(skill_info)
-        sentences = [s.strip() for s in re.split(r'(?<=[.!])\s+', combined) if s.strip()]
-        points = [f"- {s}" for s in sentences[:6]]
-        return intro + "\n".join(points)
- 
-    # Fallback: use whatever context we have
-    return _format_general_answer(chunks)
- 
- 
-def _format_projects_answer(chunks: list) -> str:
-    """Format a projects-focused answer from context chunks."""
-    project_info = []
-    for chunk in chunks:
-        if any(kw in chunk.lower() for kw in ["project", "built", "developed", "arobot", "uber", "bistro"]):
-            project_info.append(chunk)
- 
-    if project_info:
-        intro = "Here are some of Muhammad Junayed's notable projects:\n\n"
-        combined = " ".join(project_info)
-        # Try to find individual project mentions
-        projects = re.findall(r'([A-Z][\w\s-]+?)\s*\(([^)]+)\)', combined)
-        if projects:
-            points = [f"- **{name.strip()}**: {desc.strip()}" for name, desc in projects[:6]]
-            return intro + "\n".join(points)
-        # Fallback: present as sentences
-        sentences = [s.strip() for s in re.split(r'(?<=[.!])\s+', combined) if s.strip()]
-        points = [f"- {s}" for s in sentences[:6]]
-        return intro + "\n".join(points)
- 
-    return _format_general_answer(chunks)
- 
- 
-def _format_research_answer(chunks: list) -> str:
-    """Format a research-focused answer from context chunks."""
-    research_info = []
-    for chunk in chunks:
-        if any(kw in chunk.lower() for kw in ["research", "paper", "thesis", "ieee", "acl", "conference"]):
-            research_info.append(chunk)
- 
-    if research_info:
-        intro = "Here is Muhammad Junayed's research work:\n\n"
-        combined = " ".join(research_info)
-        sentences = [s.strip() for s in re.split(r'(?<=[.!])\s+', combined) if s.strip()]
-        points = [f"- {s}" for s in sentences[:5]]
-        return intro + "\n".join(points)
- 
-    return _format_general_answer(chunks)
- 
- 
-def _format_achievements_answer(chunks: list) -> str:
-    """Format an achievements-focused answer from context chunks."""
-    achievement_info = []
-    for chunk in chunks:
-        if any(kw in chunk.lower() for kw in ["award", "achiev", "honor", "recogni", "certif", "winner", "first", "best"]):
-            achievement_info.append(chunk)
- 
-    if achievement_info:
-        intro = "Here are some of Muhammad Junayed's achievements:\n\n"
-        combined = " ".join(achievement_info)
-        sentences = [s.strip() for s in re.split(r'(?<=[.!?])\s+', combined) if s.strip()]
-        points = [f"- {s}" for s in sentences[:6]]
-        return intro + "\n".join(points)
- 
-    return _format_general_answer(chunks)
- 
- 
-def _format_about_answer(chunks: list) -> str:
-    """Format an about/introduction answer from context chunks."""
-    # Prioritize chunks about the person
-    about_info = []
-    for chunk in chunks:
-        if any(kw in chunk.lower() for kw in ["muhammad junayed", "student", "specializ", "enthusiast"]):
-            about_info.append(chunk)
- 
-    if about_info:
-        # Use the first relevant chunk as a direct intro, clean it up
-        intro = about_info[0]
-        # Truncate at sentence boundary
-        sentences = [s.strip() for s in re.split(r'(?<=[.!])\s+', intro) if s.strip()]
-        return " ".join(sentences[:4])
- 
-    return _format_general_answer(chunks)
- 
- 
-def _format_experience_answer(chunks: list) -> str:
-    """Format an experience answer."""
-    exp_info = []
-    for chunk in chunks:
-        if any(kw in chunk.lower() for kw in ["experience", "work", "intern", "company", "role"]):
-            exp_info.append(chunk)
- 
-    if exp_info:
-        combined = " ".join(exp_info)
-        sentences = [s.strip() for s in re.split(r'(?<=[.!])\s+', combined) if s.strip()]
-        return " ".join(sentences[:5])
- 
-    # If no specific experience info found, say so
-    return (
-        "I don't have detailed work experience information in my current knowledge base. "
-        "Muhammad Junayed is a final-year ETE student at CUET focused on AI engineering, "
-        "computer vision, and cloud-native ML systems. Feel free to ask about his projects or skills!"
+
+
+def _unique_sections(
+    results: Sequence[Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+    unique: List[Dict[str, Any]] = []
+    seen: set[str] = set()
+    for result in sorted(results, key=_result_sort_key):
+        metadata = result.get("metadata") or {}
+        section_number = str(metadata.get("section_number") or "")
+        if section_number in seen:
+            continue
+        seen.add(section_number)
+        unique.append(result)
+    return unique
+
+
+def _fallback_profile(results: Sequence[Dict[str, Any]]) -> str:
+    for result in results:
+        metadata = result.get("metadata") or {}
+        if str(metadata.get("section_number")) == "1":
+            text = _clean_context_for_llm(str(result.get("text") or ""))
+            text = re.sub(
+                r"^Professional Profile\s*",
+                "",
+                text,
+                flags=re.IGNORECASE,
+            )
+            summary = _first_sentences(text, 4)
+            if summary:
+                return summary
+    return NO_INFORMATION_RESPONSE
+
+
+def _fallback_cgpa(results: Sequence[Dict[str, Any]]) -> str:
+    text = "\n".join(str(result.get("text") or "") for result in results)
+    cgpa = re.search(
+        r"(?im)^\s*[•◦▪\-*]?\s*CGPA\s*:\s*([^\n]+)",
+        text,
     )
- 
- 
-def _format_general_answer(chunks: list) -> str:
-    """Format a general answer from context, presenting it as readable sentences."""
-    combined = " ".join(chunks)
-    # Clean up excessive whitespace
-    combined = re.sub(r'\s+', ' ', combined).strip()
- 
-    # Truncate at sentence boundary
-    if len(combined) > 600:
-        truncated = combined[:600]
-        last_period = max(
-            truncated.rfind(". "),
-            truncated.rfind("! "),
-            truncated.rfind("? "),
+    coverage = re.search(
+        r"(?im)^\s*[•◦▪\-*]?\s*CGPA coverage\s*:\s*([^\n]+)",
+        text,
+    )
+    if not cgpa:
+        return NO_INFORMATION_RESPONSE
+
+    answer = f"Muhammad Junayed's CGPA is {cgpa.group(1).strip()}."
+    if coverage:
+        answer += f" This result covers {coverage.group(1).strip().lower()}."
+    return answer
+
+
+def _fallback_experience(results: Sequence[Dict[str, Any]]) -> str:
+    items: List[str] = []
+    for result in _unique_sections(results):
+        raw = str(result.get("text") or "")
+        section = _metadata_section(result)
+        organization = _extract_label(raw, "Organization")
+        role = _extract_label(raw, "Role")
+        duration = _extract_label(raw, "Duration")
+        focus = _extract_block(raw, ("The internship involved work related to",))
+        if not focus:
+            focus = _extract_block(raw, ("The training focused on",))
+
+        identity = role or section
+        if organization and organization.lower() not in identity.lower():
+            identity = f"{identity} at {organization}"
+        sentence = identity
+        if duration:
+            sentence += f" from {duration}"
+        sentence += "."
+        if focus:
+            sentence += f" The documented focus included {focus.lower()}."
+        items.append(sentence)
+
+    if not items:
+        return NO_INFORMATION_RESPONSE
+
+    return " ".join(items)
+
+
+def _fallback_project_summary(results: Sequence[Dict[str, Any]]) -> str:
+    projects = _unique_sections(results)
+    if not projects:
+        return NO_INFORMATION_RESPONSE
+
+    titles = [_metadata_section(result) for result in projects]
+    types = [
+        _extract_label(str(result.get("text") or ""), "Project type")
+        for result in projects
+    ]
+    normalized_types = [project_type for project_type in types if project_type]
+
+    representative = titles[:5]
+    intro = (
+        f"Muhammad Junayed's portfolio contains {len(projects)} documented "
+        "projects spanning AI and machine learning, backend and distributed "
+        "systems, full-stack development, MLOps, and IoT."
+    )
+    examples = (
+        "Representative projects include "
+        + ", ".join(representative[:-1])
+        + (f", and {representative[-1]}." if representative else "")
+    )
+
+    if normalized_types:
+        breadth = (
+            "Across these projects, he has worked with multimodal RAG, "
+            "microservices and asynchronous processing, data engineering, "
+            "computer vision, cloud deployment, and embedded automation."
         )
-        if last_period > 150:
-            combined = truncated[:last_period + 1]
+    else:
+        breadth = (
+            "The projects demonstrate work across software, machine learning, "
+            "cloud, and embedded systems."
+        )
+
+    closing = (
+        "A named project can be explained separately with its architecture, "
+        "technologies, features, and documented outcome."
+    )
+    return " ".join((intro, examples, breadth, closing))
+
+
+def _fallback_specific_project(
+    results: Sequence[Dict[str, Any]],
+) -> str:
+    if not results:
+        return NO_INFORMATION_RESPONSE
+
+    result = sorted(results, key=_result_sort_key)[0]
+    raw = str(result.get("text") or "")
+    title = _metadata_section(result)
+    project_type = _extract_label(raw, "Project type")
+    problem = _extract_block(raw, ("Problem",))
+    technologies = _extract_block(
+        raw,
+        ("Technologies", "Technologies and Models", "Technologies and Methods"),
+    )
+    implementation = _extract_block(
+        raw,
+        (
+            "Approach",
+            "Architecture",
+            "Implementation Context",
+            "Features and Architecture",
+        ),
+    )
+    outcome = _extract_block(raw, ("Outcome", "Reported Outcome"))
+
+    sentences = [f"{title} is one of Muhammad Junayed's documented projects."]
+    if project_type:
+        article = "an" if project_type[:1].lower() in "aeiou" else "a"
+        sentences.append(
+            f"It is {article} {project_type.lower()} project."
+        )
+    if problem:
+        sentences.append(_first_sentences(problem, 2))
+    if technologies:
+        technology_items = _extract_block_items(
+            raw,
+            ("Technologies", "Technologies and Models", "Technologies and Methods"),
+        )
+        technology_text = ", ".join(technology_items[:8]) or technologies
+        sentences.append(f"Its documented technologies include {technology_text}.")
+    if implementation:
+        sentences.append(_first_sentences(implementation, 2))
+    if outcome:
+        sentences.append(_first_sentences(outcome, 2))
+
+    return _clean_response(" ".join(sentences))
+
+
+def _fallback_research_summary(
+    results: Sequence[Dict[str, Any]],
+) -> str:
+    by_section = {
+        str((result.get("metadata") or {}).get("section_number")): result
+        for result in _unique_sections(results)
+    }
+
+    sentences: List[str] = []
+
+    thesis = by_section.get("4.1")
+    thesis_problem = by_section.get("4.2")
+    if thesis:
+        raw = str(thesis.get("text") or "")
+        title = _extract_label(raw, "Title")
+        status = _extract_label(raw, "Status")
+        if title:
+            sentence = f"His undergraduate thesis, “{title},”"
+            if status:
+                sentence += f" is {status.lower()}"
+            sentence += "."
+            sentences.append(sentence)
+    if thesis_problem:
+        problem = _extract_block(
+            str(thesis_problem.get("text") or ""),
+            ("Research Problem",),
+        )
+        if problem:
+            sentences.append(_first_sentences(problem, 2))
+
+    for section_number in ("9.1", "9.2", "9.3"):
+        item = by_section.get(section_number)
+        if not item:
+            continue
+
+        raw = str(item.get("text") or "")
+        title = _metadata_section(item)
+        problem = _extract_block(raw, ("Research Problem",))
+        approach = _extract_block(raw, ("Approach",))
+        result_text = _extract_block(raw, ("Main Result", "Main Finding"))
+
+        sentence = f"In “{title},” "
+        if approach:
+            sentence += _first_sentences(approach, 1)
+        elif problem:
+            sentence += _first_sentences(problem, 1)
         else:
-            last_space = truncated.rfind(" ")
-            if last_space > 150:
-                combined = truncated[:last_space] + "."
-            else:
-                combined = truncated + "..."
- 
-    return combined
+            sentence += "he contributed to the reported study."
+
+        if result_text:
+            sentence += " " + _first_sentences(result_text, 1)
+
+        sentences.append(sentence)
+
+    return _clean_response(" ".join(sentences)) if sentences else NO_INFORMATION_RESPONSE
+
+
+def _fallback_specific_research(
+    results: Sequence[Dict[str, Any]],
+) -> str:
+    if not results:
+        return NO_INFORMATION_RESPONSE
+
+    result = sorted(results, key=_result_sort_key)[0]
+    raw = str(result.get("text") or "")
+    title = _metadata_section(result)
+    authors = _extract_label(raw, "Authors")
+    venue = (
+        _extract_label(raw, "Conference")
+        or _extract_label(raw, "Venue")
+    )
+    problem = _extract_block(raw, ("Research Problem",))
+    dataset = _extract_block(raw, ("Dataset",))
+    approach = _extract_block(raw, ("Approach",))
+    result_text = _extract_block(raw, ("Main Result", "Main Finding"))
+    doi = _extract_label(raw, "DOI")
+
+    sentences = [f"“{title}” is one of Muhammad Junayed's research publications."]
+    if problem:
+        sentences.append(_first_sentences(problem, 2))
+    if dataset:
+        sentences.append(f"The documented dataset information states that {_first_sentences(dataset, 1).lower()}")
+    if approach:
+        sentences.append(_first_sentences(approach, 2))
+    if result_text:
+        sentences.append(_first_sentences(result_text, 2))
+    if authors or venue or (doi and doi.lower() != "not provided"):
+        details: List[str] = []
+        if venue:
+            details.append(f"it was presented or published through {venue}")
+        if authors:
+            details.append(f"the listed authors are {authors}")
+        if doi and doi.lower() != "not provided":
+            details.append(f"the DOI is {doi}")
+        sentences.append("For publication details, " + "; ".join(details) + ".")
+
+    return _clean_response(" ".join(sentences))
+
+
+def _fallback_contact(
+    question: str,
+    results: Sequence[Dict[str, Any]],
+) -> str:
+    raw = "\n".join(str(result.get("text") or "") for result in results)
+    urls = _extract_urls(raw)
+    email = _extract_email(raw)
+    normalized = _normalize_text(question)
+
+    if _contains_term(normalized, "linkedin") and urls.get("linkedin"):
+        return f"Muhammad Junayed's LinkedIn profile is {urls['linkedin']}."
+    if _contains_term(normalized, "github") and urls.get("github"):
+        return f"Muhammad Junayed's GitHub profile is {urls['github']}."
+    if _contains_term(normalized, "google scholar") and urls.get("google scholar"):
+        return f"His Google Scholar profile is {urls['google scholar']}."
+    if _contains_term(normalized, "orcid") and urls.get("orcid"):
+        return f"His ORCID profile is {urls['orcid']}."
+    if _contains_term(normalized, "email") and email:
+        return f"Muhammad Junayed's professional email is {email}."
+
+    phone = re.search(
+        r"(?im)^\s*[•◦▪\-*]?\s*Phone\s*:\s*([^\n]+)",
+        raw,
+    )
+    if any(
+        _contains_term(normalized, term)
+        for term in ("phone", "mobile")
+    ) and phone:
+        return f"Muhammad Junayed's listed phone number is {phone.group(1).strip()}."
+
+    details: List[str] = []
+    if email:
+        details.append(f"email at {email}")
+    if urls.get("linkedin"):
+        details.append(f"LinkedIn at {urls['linkedin']}")
+    if urls.get("github"):
+        details.append(f"GitHub at {urls['github']}")
+
+    if not details:
+        return NO_INFORMATION_RESPONSE
+
+    return "You can reach Muhammad Junayed through " + ", ".join(details) + "."
+
+
+def _generate_fallback_response(
+    user_message: str,
+    context: str,
+    intent: str = INTENT_GENERAL,
+    results: Optional[Sequence[Dict[str, Any]]] = None,
+) -> str:
+    """Produce a grounded answer when the LLM API is unavailable."""
+    result_list = list(results or [])
+
+    if _is_greeting(user_message):
+        return (
+            "Hello! I can tell you about Muhammad Junayed's profile, research, "
+            "projects, skills, education, and experience."
+        )
+
+    if _is_off_topic(user_message):
+        return OFF_TOPIC_RESPONSE
+
+    if intent == INTENT_PROFILE:
+        return _fallback_profile(result_list)
+    if intent == INTENT_CGPA:
+        return _fallback_cgpa(result_list)
+    if intent == INTENT_EXPERIENCE:
+        return _fallback_experience(result_list)
+    if intent == INTENT_PROJECT_SUMMARY:
+        return _fallback_project_summary(result_list)
+    if intent == INTENT_PROJECT_SPECIFIC:
+        return _fallback_specific_project(result_list)
+    if intent == INTENT_RESEARCH_SUMMARY:
+        return _fallback_research_summary(result_list)
+    if intent == INTENT_RESEARCH_SPECIFIC:
+        return _fallback_specific_research(result_list)
+    if intent == INTENT_CONTACT:
+        return _fallback_contact(user_message, result_list)
+
+    if not context or context == "No specific context available.":
+        return NO_INFORMATION_RESPONSE
+
+    clean = _clean_context_for_llm(context)
+    return _first_sentences(clean, 5) or NO_INFORMATION_RESPONSE
+
+
+# Compatibility wrappers for older tests/imports.
+def _build_structured_answer(question: str, context: str) -> str:
+    intent = _detect_intent(question).intent
+    return _generate_fallback_response(
+        question,
+        context,
+        intent=intent,
+        results=[],
+    )
+
+
+def _format_skills_answer(chunks: list) -> str:
+    return _first_sentences(" ".join(chunks), 6) or NO_INFORMATION_RESPONSE
+
+
+def _format_projects_answer(chunks: list) -> str:
+    return _first_sentences(" ".join(chunks), 6) or NO_INFORMATION_RESPONSE
+
+
+def _format_research_answer(chunks: list) -> str:
+    return _first_sentences(" ".join(chunks), 6) or NO_INFORMATION_RESPONSE
+
+
+def _format_achievements_answer(chunks: list) -> str:
+    return _first_sentences(" ".join(chunks), 6) or NO_INFORMATION_RESPONSE
+
+
+def _format_about_answer(chunks: list) -> str:
+    return _first_sentences(" ".join(chunks), 4) or NO_INFORMATION_RESPONSE
+
+
+def _format_experience_answer(chunks: list) -> str:
+    return _first_sentences(" ".join(chunks), 5) or NO_INFORMATION_RESPONSE
+
+
+def _format_general_answer(chunks: list) -> str:
+    return _first_sentences(" ".join(chunks), 5) or NO_INFORMATION_RESPONSE
+
+
+# ---------------------------------------------------------------------------
+# Main public function
+# ---------------------------------------------------------------------------
+
+async def generate_response(
+    user_message: str,
+    conversation_history: Optional[Sequence[Dict[str, Any]]] = None,
+) -> Dict[str, Any]:
+    """Generate a metadata-aware, intent-routed portfolio answer."""
+    message = (user_message or "").strip()
+
+    if _is_greeting(message):
+        return {
+            "response": (
+                "Hello! I can tell you about Muhammad Junayed's profile, "
+                "research, projects, skills, education, and experience."
+            ),
+            "sources": [],
+        }
+
+    resolved_message = _resolve_follow_up(message, conversation_history)
+
+    if _is_off_topic(resolved_message):
+        return {
+            "response": OFF_TOPIC_RESPONSE,
+            "sources": [],
+        }
+
+    intent_result = _detect_intent(
+        resolved_message,
+        conversation_history=conversation_history,
+    )
+
+    try:
+        results = await _retrieve_for_intent(
+            resolved_message,
+            intent_result,
+        )
+    except Exception as exc:
+        logger.exception(
+            "Portfolio retrieval failed for intent %s: %s",
+            intent_result.intent,
+            exc,
+        )
+        results = []
+
+    results = _deduplicate_results(results)
+    context = _prepare_context(results, intent_result.intent)
+
+    sources = list(
+        dict.fromkeys(
+            str((result.get("metadata") or {}).get("source") or "profile")
+            for result in results
+        )
+    )
+
+    if not settings.HF_API_TOKEN:
+        response_text = _generate_fallback_response(
+            resolved_message,
+            context,
+            intent=intent_result.intent,
+            results=results,
+        )
+        return {"response": response_text, "sources": sources}
+
+    prompt = _build_prompt(
+        resolved_message,
+        context,
+        intent=intent_result.intent,
+    )
+
+    try:
+        response_text = await _call_hf_api(prompt)
+    except Exception as first_error:
+        logger.warning(
+            "HF API call failed; retrying once. Error: %s",
+            first_error,
+        )
+        try:
+            await asyncio.sleep(1.5)
+            response_text = await _call_hf_api(prompt, timeout=18.0)
+        except Exception as retry_error:
+            logger.error(
+                "HF API retry failed for intent %s: %s",
+                intent_result.intent,
+                retry_error,
+            )
+            response_text = _generate_fallback_response(
+                resolved_message,
+                context,
+                intent=intent_result.intent,
+                results=results,
+            )
+
+    return {
+        "response": _clean_response(response_text),
+        "sources": sources,
+    }
