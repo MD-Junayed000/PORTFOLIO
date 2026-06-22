@@ -168,20 +168,14 @@ export default function ChatWidget() {
       </AnimatePresence>
 
       {/* Toggle button */}
-      <div className="relative group">
+      <div className="relative">
         <button
           onClick={() => setIsOpen(!isOpen)}
           className="w-14 h-14 bg-primary hover:bg-primary-hover text-white rounded-full shadow-lg flex items-center justify-center transition-all hover:scale-105"
           aria-label="Ask about Junayed"
-          title="Ask about Junayed"
         >
           {isOpen ? <X size={22} /> : <MessageCircle size={22} />}
         </button>
-        {!isOpen && (
-          <span className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 px-3 py-1.5 text-xs font-medium text-white bg-gray-800 rounded-lg opacity-0 group-hover:opacity-100 transition-opacity whitespace-nowrap pointer-events-none">
-            Ask about Junayed
-          </span>
-        )}
       </div>
     </div>
   );

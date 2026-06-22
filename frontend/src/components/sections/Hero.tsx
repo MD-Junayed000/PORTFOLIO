@@ -5,7 +5,7 @@ import { motion } from "framer-motion";
 import { ArrowDown, Download } from "lucide-react";
 import Image from "next/image";
 import { GithubIcon, LinkedinIcon, GoogleScholarIcon } from "@/components/icons";
-import api from "@/lib/api";
+import api, { API_BASE_URL } from "@/lib/api";
 import { About } from "@/types";
 
 const defaultSocialLinks = [
@@ -64,7 +64,11 @@ export default function Hero() {
     about?.focus_area ||
     "Specializing in Computer Vision, NLP, and Cloud-Native ML Systems. Building intelligent solutions at the intersection of research and production.";
 
-  const cvUrl = about?.cv_file_path || "/Muhammad_Junayed_CV.pdf";
+  const rawCvUrl = about?.cv_file_path || "/Muhammad_Junayed_CV.pdf";
+  // If the CV URL is a backend upload path, prepend the API base URL
+  const cvUrl = rawCvUrl.startsWith("/uploads/")
+    ? `${API_BASE_URL}${rawCvUrl}`
+    : rawCvUrl;
 
   return (
     <section className="relative min-h-screen flex items-center justify-center pt-32 md:pt-40">

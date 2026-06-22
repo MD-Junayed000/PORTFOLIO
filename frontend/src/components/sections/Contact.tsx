@@ -3,10 +3,9 @@
 import { useEffect, useState } from "react";
 import { motion } from "framer-motion";
 import { Mail, Phone, Send, MapPin } from "lucide-react";
-import { GithubIcon, LinkedinIcon, GoogleScholarIcon } from "@/components/icons";
 import api from "@/lib/api";
 import toast from "react-hot-toast";
-import { ContactInfo, About } from "@/types";
+import { ContactInfo } from "@/types";
 
 export default function Contact() {
   const [formData, setFormData] = useState({
@@ -16,16 +15,11 @@ export default function Contact() {
   });
   const [sending, setSending] = useState(false);
   const [contactInfo, setContactInfo] = useState<ContactInfo | null>(null);
-  const [about, setAbout] = useState<About | null>(null);
 
   useEffect(() => {
     api
       .get("/api/contact-info")
       .then((res) => setContactInfo(res.data))
-      .catch(() => {});
-    api
-      .get("/api/about")
-      .then((res) => setAbout(res.data))
       .catch(() => {});
   }, []);
 
@@ -50,13 +44,6 @@ export default function Contact() {
   const displayEmail = contactInfo?.email || "mdjunayed573@gmail.com";
   const displayPhone = contactInfo?.phone || "+880 1876220119";
   const displayAddress = contactInfo?.address;
-
-  const githubUrl = about?.github_url || "https://github.com/MD-Junayed000";
-  const linkedinUrl =
-    about?.linkedin_url || "https://www.linkedin.com/in/muhammad-junayed-ete20/";
-  const scholarUrl =
-    about?.scholar_url ||
-    "https://scholar.google.com/citations?user=wObQzNsAAAAJ&hl=en";
 
   return (
     <section id="contact" className="py-20">
@@ -180,42 +167,6 @@ export default function Contact() {
                       </div>
                     </div>
                   )}
-                </div>
-              </div>
-
-              {/* Social Links */}
-              <div className="bg-surface border border-border rounded-xl p-6">
-                <h3 className="text-lg font-semibold text-foreground mb-4">
-                  Find me online
-                </h3>
-                <div className="flex items-center gap-3">
-                  <a
-                    href={githubUrl}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="p-3 bg-background border border-border rounded-lg text-muted hover:text-primary hover:border-primary/50 transition-colors"
-                    aria-label="GitHub"
-                  >
-                    <GithubIcon size={20} />
-                  </a>
-                  <a
-                    href={linkedinUrl}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="p-3 bg-background border border-border rounded-lg text-muted hover:text-primary hover:border-primary/50 transition-colors"
-                    aria-label="LinkedIn"
-                  >
-                    <LinkedinIcon size={20} />
-                  </a>
-                  <a
-                    href={scholarUrl}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="p-3 bg-background border border-border rounded-lg text-muted hover:text-primary hover:border-primary/50 transition-colors"
-                    aria-label="Google Scholar"
-                  >
-                    <GoogleScholarIcon size={20} />
-                  </a>
                 </div>
               </div>
             </div>

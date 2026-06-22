@@ -5,6 +5,56 @@ import { motion } from "framer-motion";
 import api from "@/lib/api";
 import type { Skill } from "@/types";
 
+// Map skill names to devicon icon names
+const DEVICON_MAP: Record<string, string> = {
+  python: "python",
+  docker: "docker",
+  fastapi: "fastapi",
+  "node.js": "nodejs",
+  nodejs: "nodejs",
+  postgresql: "postgresql",
+  react: "react",
+  aws: "amazonwebservices",
+  "c++": "cplusplus",
+  javascript: "javascript",
+  typescript: "typescript",
+  pytorch: "pytorch",
+  tensorflow: "tensorflow",
+  java: "java",
+  git: "git",
+  linux: "linux",
+  mongodb: "mongodb",
+  redis: "redis",
+  nextjs: "nextjs",
+  "next.js": "nextjs",
+  tailwind: "tailwindcss",
+  tailwindcss: "tailwindcss",
+  html: "html5",
+  css: "css3",
+  mysql: "mysql",
+  flask: "flask",
+  django: "django",
+  vue: "vuejs",
+  angular: "angularjs",
+  kubernetes: "kubernetes",
+  nginx: "nginx",
+  go: "go",
+  rust: "rust",
+  php: "php",
+  swift: "swift",
+  kotlin: "kotlin",
+  figma: "figma",
+  firebase: "firebase",
+  graphql: "graphql",
+};
+
+function getDeviconUrl(skillName: string): string | null {
+  const key = skillName.toLowerCase().trim();
+  const icon = DEVICON_MAP[key];
+  if (!icon) return null;
+  return `https://cdn.jsdelivr.net/gh/devicons/devicon/icons/${icon}/${icon}-original.svg`;
+}
+
 export default function Skills() {
   const [skills, setSkills] = useState<Skill[]>([]);
 
@@ -75,8 +125,17 @@ function MarqueeRow({
         {[...skills, ...skills].map((skill, index) => (
           <span
             key={`${skill.id}-${index}`}
-            className="inline-flex items-center px-4 py-2 bg-surface border border-border rounded-full text-sm text-foreground whitespace-nowrap hover:border-primary hover:text-primary transition-colors"
+            className="inline-flex items-center gap-1.5 px-4 py-2 bg-surface border border-border rounded-full text-sm text-foreground whitespace-nowrap hover:border-primary hover:text-primary transition-colors"
           >
+            {getDeviconUrl(skill.name) && (
+              <img
+                src={getDeviconUrl(skill.name)!}
+                alt=""
+                width={16}
+                height={16}
+                className="inline-block"
+              />
+            )}
             {skill.name}
           </span>
         ))}

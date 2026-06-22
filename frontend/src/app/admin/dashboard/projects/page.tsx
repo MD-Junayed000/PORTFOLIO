@@ -2,7 +2,7 @@
 
 import { useEffect, useState, useRef } from "react";
 import { Plus, Pencil, Trash2, Loader2, X, Upload, ArrowUp, ArrowDown, Save } from "lucide-react";
-import api from "@/lib/api";
+import api, { API_BASE_URL } from "@/lib/api";
 import toast from "react-hot-toast";
 import type { Project } from "@/types";
 
@@ -280,18 +280,18 @@ export default function AdminProjects() {
             </div>
             <div>
               <label className="block text-sm text-muted mb-1">
-                Image URL
+                Project Image
               </label>
-              <div className="flex items-center gap-2">
-                <input
-                  type="url"
-                  value={form.image_url}
-                  onChange={(e) =>
-                    setForm({ ...form, image_url: e.target.value })
-                  }
-                  className="flex-1 bg-background border border-border rounded-lg px-3 py-2 text-sm text-foreground focus:outline-none focus:border-primary"
-                  placeholder="https://..."
-                />
+              <div className="flex items-center gap-3">
+                {form.image_url && (
+                  <div className="w-16 h-16 rounded-lg overflow-hidden border border-border flex-shrink-0">
+                    <img
+                      src={form.image_url.startsWith("/uploads/") ? `${API_BASE_URL}${form.image_url}` : form.image_url}
+                      alt="Project preview"
+                      className="w-full h-full object-cover"
+                    />
+                  </div>
+                )}
                 <input
                   ref={fileInputRef}
                   type="file"
@@ -310,8 +310,17 @@ export default function AdminProjects() {
                   ) : (
                     <Upload size={14} />
                   )}
-                  Upload
+                  {form.image_url ? "Change Image" : "Upload Image"}
                 </button>
+                {form.image_url && (
+                  <button
+                    type="button"
+                    onClick={() => setForm({ ...form, image_url: "" })}
+                    className="text-xs text-muted hover:text-red-400 transition-colors"
+                  >
+                    Remove
+                  </button>
+                )}
               </div>
             </div>
             <div className="grid sm:grid-cols-3 gap-4">
