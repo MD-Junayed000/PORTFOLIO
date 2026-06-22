@@ -50,6 +50,7 @@ def _is_off_topic(message: str) -> bool:
         "resume", "certificate", "background", "about", "who", "qualification",
         "university", "cuet", "degree", "internship", "company", "kaggle",
         "scholar", "award", "achievement", "portfolio",
+        "live", "lives", "located", "home", "city", "country", "place", "from", "based",
     ]
     has_portfolio_relevance = any(kw in message_lower for kw in portfolio_keywords)
     # Short generic questions without portfolio keywords are likely off-topic
@@ -60,6 +61,19 @@ def _is_off_topic(message: str) -> bool:
 
 async def generate_response(user_message: str) -> dict:
     """Generate a response using RAG: query vector store for context, then call HuggingFace."""
+    # Handle greetings directly (before off-topic check)
+    greeting_words = {"hello", "hi", "hey", "greetings", "howdy", "hola", "yo", "sup", "good morning", "good evening", "good afternoon"}
+    stripped = re.sub(r'[^\w\s]', '', user_message.lower()).strip()
+    if stripped in greeting_words or stripped.startswith(("hi ", "hey ", "hello ")):
+        return {
+            "response": (
+                "Hello! I'm Muhammad Junayed's AI assistant. "
+                "I can tell you about his projects, skills, research, and experience. "
+                "What would you like to know?"
+            ),
+            "sources": [],
+        }
+
     # Retrieve relevant context from vector store
     results = vector_query(user_message, n_results=3)
     context_texts = [r["text"] for r in results]
@@ -78,8 +92,9 @@ async def generate_response(user_message: str) -> dict:
             "sources": list(set(sources)),
         }
 
-    # Detect off-topic questions before calling the HF API
-    if _is_off_topic(user_message):
+    # Quick off-topic detection for clearly irrelevant questions (saves API calls)
+    message_lower = user_message.lower()
+    if any(kw in message_lower for kw in OFF_TOPIC_KEYWORDS):
         return {
             "response": (
                 "I'm specifically designed to answer questions about Muhammad Junayed — "
@@ -181,10 +196,10 @@ def _generate_fallback_response(user_message: str, context: str) -> str:
     message_lower = user_message.lower().strip()
 
     # Handle greetings ONLY when the entire message is a greeting (not part of a longer question)
-    greeting_words = {"hello", "hi", "hey", "greetings", "howdy", "hola", "yo"}
+    greeting_words = {"hello", "hi", "hey", "greetings", "howdy", "hola", "yo", "sup", "good morning", "good evening", "good afternoon"}
     # Strip punctuation for comparison
     stripped_message = re.sub(r'[^\w\s]', '', message_lower).strip()
-    if stripped_message in greeting_words:
+    if stripped_message in greeting_words or stripped_message.startswith(("hi ", "hey ", "hello ")):
         return (
             "Hello! I'm Muhammad Junayed's AI assistant. "
             "I can tell you about his projects, skills, research, and experience. "
@@ -267,21 +282,34 @@ def _generate_fallback_response(user_message: str, context: str) -> str:
         )
 
     # Email/contact requests
-    if any(word in message_lower for word in ["email", "mail", "contact info", "reach"]):
-        found_email = _extract_email(context) if context else None
-        found_email = found_email or "mdjunayed573@gmail.com"
-        response = f"You can reach Muhammad Junayed via email at: {found_email}"
+    if any(word in message_lower for word in ["email", "mail", "contact", "reach", "how to contact"]):
+        return (
+            "You can contact Muhammad Junayed via:\n"
+            "- Email: mdjunayed573@gmail.com\n"
+            "- LinkedIn: https://www.linkedin.com/in/muhammad-junayed-ete20/\n"
+            "- GitHub: https://github.com/MD-Junayed000\n\n"
+            "Or use the contact form on this website!"
+        )
+
+    # Achievement/award requests
+    if any(word in message_lower for word in ["achievement", "award", "accomplish", "honor", "recognition"]):
         if context and context != "No specific context available.":
-            urls = _extract_urls(context)
-            if urls:
-                social_parts = []
-                if "linkedin" in urls:
-                    social_parts.append(f"LinkedIn: {urls['linkedin']}")
-                if "github" in urls:
-                    social_parts.append(f"GitHub: {urls['github']}")
-                if social_parts:
-                    response += "\n\nHe is also available on:\n" + "\n".join(f"- {s}" for s in social_parts)
-        return response
+            # Try to find achievement-related content in context
+            achievement_sentences = []
+            for sentence in re.split(r'(?<=[.!?])\s+', context):
+                if any(kw in sentence.lower() for kw in ["award", "achiev", "honor", "recogni", "certif", "winner", "first", "best"]):
+                    achievement_sentences.append(sentence.strip())
+            if achievement_sentences:
+                intro = "Here are some of Muhammad Junayed's achievements:\n\n"
+                points = [f"- {s}" for s in achievement_sentences[:5]]
+                return intro + "\n".join(points)
+        return (
+            "Muhammad Junayed's notable achievements include:\n"
+            "- Published research papers at IEEE (ICAEEE 2024) and ACL workshop (BEA 2025)\n"
+            "- B.Sc. thesis on hallucination detection/mitigation in LLMs\n"
+            "- Multiple ML/AI projects including healthcare chatbot and industrial defect recognition\n\n"
+            "Ask about his research or projects for more details!"
+        )
 
     # If no meaningful context available after keyword checks, return generic response
     if not context or context == "No specific context available.":
@@ -311,6 +339,8 @@ def _build_structured_answer(question: str, context: str) -> str:
         return _format_projects_answer(chunks)
     elif any(word in question for word in ["research", "paper", "publication", "thesis"]):
         return _format_research_answer(chunks)
+    elif any(word in question for word in ["achievement", "award", "accomplish", "honor", "recognition"]):
+        return _format_achievements_answer(chunks)
     elif any(word in question for word in ["who", "about", "tell me", "introduce", "background"]):
         return _format_about_answer(chunks)
     elif any(word in question for word in ["experience", "job", "intern", "company"]):
@@ -374,6 +404,23 @@ def _format_research_answer(chunks: list) -> str:
         combined = " ".join(research_info)
         sentences = [s.strip() for s in re.split(r'(?<=[.!])\s+', combined) if s.strip()]
         points = [f"- {s}" for s in sentences[:5]]
+        return intro + "\n".join(points)
+
+    return _format_general_answer(chunks)
+
+
+def _format_achievements_answer(chunks: list) -> str:
+    """Format an achievements-focused answer from context chunks."""
+    achievement_info = []
+    for chunk in chunks:
+        if any(kw in chunk.lower() for kw in ["award", "achiev", "honor", "recogni", "certif", "winner", "first", "best"]):
+            achievement_info.append(chunk)
+
+    if achievement_info:
+        intro = "Here are some of Muhammad Junayed's achievements:\n\n"
+        combined = " ".join(achievement_info)
+        sentences = [s.strip() for s in re.split(r'(?<=[.!?])\s+', combined) if s.strip()]
+        points = [f"- {s}" for s in sentences[:6]]
         return intro + "\n".join(points)
 
     return _format_general_answer(chunks)
