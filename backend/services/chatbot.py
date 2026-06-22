@@ -11,17 +11,19 @@ from services.vector_store import query as vector_query
 logger = logging.getLogger(__name__)
  
  
-SYSTEM_PROMPT = """You are Muhammad Junayed's portfolio assistant. Answer questions about him using the context below.
- 
+SYSTEM_PROMPT = """You are Muhammad Junayed's portfolio assistant. Answer questions about him using only the retrieved context below.
+
 Rules:
-- Use ONLY the context to answer. Be concise (2-4 sentences).
-- Speak naturally in complete sentences. NEVER use bullet points or lists.
-- NEVER include metadata fields such as Document ID, Authors, Conference, DOI, Publisher, Pages, Code repository, Publication date, or any "Key: Value" formatted data in your response.
-- NEVER echo raw formatting, section headers, or structured data from the context.
-- NEVER repeat instructional notes, disclaimers, or meta-commentary from the context (e.g., phrases about what is "not documented", "not specified", or what "should not be inferred"). Only state facts.
-- If the question is unrelated to Junayed's portfolio (weather, opinions, general knowledge), say: "I can only answer questions about Muhammad Junayed's portfolio and background."
-- If the context doesn't contain the answer, say you don't have that specific information.
- 
+- Give a concise, natural answer in 2-4 complete sentences.
+- Do not use bullet points unless the user explicitly asks for a list.
+- Never reveal internal fields such as Document ID or retrieval/chunk metadata.
+- Do not echo raw PDF formatting, section labels, or repeated "Key: Value" records. Convert relevant facts into natural sentences.
+- Public portfolio facts such as authors, conference names, dates, DOI links, repositories, contact links, scores, ranks, and project technologies may be stated when they directly answer the question.
+- Preserve qualifiers such as "approximate", "up to", "ongoing", and "as reported"; never strengthen them into certain claims.
+- Do not repeat source instructions, verification notes, evaluation-limitations blocks, or unsupported claims.
+- If the question is unrelated to Muhammad Junayed's portfolio, say: "I can only answer questions about Muhammad Junayed's portfolio and background."
+- If the retrieved context does not contain the answer, say that you do not have that specific information.
+
 Context:
 {context}
 """
@@ -37,67 +39,92 @@ OFF_TOPIC_KEYWORDS = [
 ]
  
  
+def _contains_term(text: str, term: str) -> bool:
+    """Match a word or phrase without accidental substring matches."""
+    pattern = r"(?<!\w)" + re.escape(term).replace(r"\ ", r"\s+") + r"(?!\w)"
+    return re.search(pattern, text, flags=re.IGNORECASE) is not None
+
+
 def _is_off_topic(message: str) -> bool:
-    message_lower = message.lower()
-    # Check for off-topic keywords
-    if any(kw in message_lower for kw in OFF_TOPIC_KEYWORDS):
+    """Return True when a message is clearly outside Junayed's portfolio."""
+    message_lower = message.lower().strip()
+    if not message_lower:
         return True
-    # If the message doesn't mention junayed/portfolio-related terms
-    # AND doesn't ask about skills/projects/experience/education etc, it's likely off-topic
-    portfolio_keywords = [
-        "junayed", "skill", "project", "experience", "education", "research",
-        "paper", "publication", "work", "works", "working", "job", "employ", "employed",
-        "built", "tech", "stack", "language",
-        "linkedin", "github", "email", "contact", "phone", "address", "cv",
-        "resume", "certificate", "background", "about", "who", "qualification",
-        "university", "cuet", "degree", "internship", "company", "kaggle",
-        "scholar", "award", "achievement", "portfolio",
-        "live", "lives", "located", "home", "city", "country", "place", "from", "based",
-        "cgpa", "gpa", "grade", "result", "score", "marks",
-        "thesis", "course", "coursework", "language", "speak", "bangla", "english",
-        "interest", "orcid", "doi", "poridhi", "brain station", "intern", "hackathon",
-        "competition", "conference", "ieee", "acl", "semeval", "televerse", "arobot",
-        "rickshaw", "bistro", "sensor", "iot", "embedded", "extracurricular",
-        "volunteer", "activity", "club", "society", "training", "trainee",
-        "supervisor",
-    ]
- 
-    # Pronouns alone are NOT sufficient to indicate portfolio relevance.
-    # They only count if combined with a substantive keyword or a longer message.
-    pronoun_keywords = ["he", "his", "him"]
- 
-    has_portfolio_relevance = any(kw in message_lower for kw in portfolio_keywords)
- 
-    # Check if pronouns are present (word-boundary match to avoid false positives)
-    has_pronoun = any(
-        re.search(r'\b' + re.escape(p) + r'\b', message_lower) for p in pronoun_keywords
+
+    # Match complete words/phrases. This prevents "war" from matching "award"
+    # and "math" from matching "mathematics".
+    if any(_contains_term(message_lower, term) for term in OFF_TOPIC_KEYWORDS):
+        return True
+
+    person_terms = ("junayed", "muhammad", "he", "his", "him")
+    has_person_reference = any(
+        _contains_term(message_lower, term) for term in person_terms
     )
- 
-    # Pronouns only count as portfolio-relevant if the message ALSO contains
-    # a substantive portfolio keyword OR is longer than 6 words
-    if not has_portfolio_relevance and has_pronoun:
-        if len(message.split()) > 6:
-            has_portfolio_relevance = True
-        # Otherwise pronouns alone don't make it portfolio-relevant
- 
-    # Short generic questions without portfolio keywords are likely off-topic
-    if not has_portfolio_relevance and len(message.split()) <= 6:
-        return True
-    return False
- 
- 
+
+    strong_portfolio_terms = (
+        "skill", "skills", "project", "projects", "experience", "education",
+        "research", "paper", "publication", "job", "employment", "employed",
+        "technology", "technologies", "tech stack", "programming language",
+        "linkedin", "github", "email", "contact", "phone", "address", "cv",
+        "resume", "certificate", "certification", "background", "qualification",
+        "university", "cuet", "degree", "internship", "company", "kaggle",
+        "scholar", "award", "awards", "achievement", "achievements",
+        "portfolio", "cgpa", "gpa", "grade", "result", "score", "marks",
+        "thesis", "course", "courses", "coursework", "speak", "bangla",
+        "english", "interest", "orcid", "doi", "poridhi", "brain station",
+        "intern", "hackathon", "competition", "conference", "ieee", "acl",
+        "semeval", "televerse", "arobot", "rickshaw", "bistro", "sensor",
+        "iot", "embedded", "extracurricular", "volunteer", "club", "society",
+        "training", "trainee", "supervisor",
+    )
+    if any(
+        _contains_term(message_lower, term)
+        for term in strong_portfolio_terms
+    ):
+        return False
+
+    # Ambiguous biographical/location words count only when the question
+    # explicitly refers to Junayed.
+    person_dependent_terms = (
+        "who", "about", "work", "works", "working", "built", "made",
+        "created", "live", "lives", "located", "home", "city", "country",
+        "place", "from", "based",
+    )
+    if has_person_reference and any(
+        _contains_term(message_lower, term)
+        for term in person_dependent_terms
+    ):
+        return False
+
+    # Mentioning Junayed by name is enough; a bare pronoun is not.
+    if _contains_term(message_lower, "junayed"):
+        return False
+    if _contains_term(message_lower, "muhammad junayed"):
+        return False
+
+    return True
+
 def _clean_context_for_llm(context: str) -> str:
-    """Remove metadata artifacts from context to prevent LLM from echoing them.
-    
-    The PDF contains structured metadata in '* Key: Value' format that the LLM
-    tends to echo verbatim. Strip all of these and keep only narrative text.
-    Also removes disclaimer/instructional phrases that the LLM tends to repeat.
+    """Prepare retrieved PDF text without deleting useful portfolio facts.
+
+    This knowledge base is intentionally structured with many bullet-based
+    ``Label: Value`` records. Those records contain essential facts such as
+    CGPA, dates, roles, repositories, ranks, scores, and contact information,
+    so they must remain available to the language model. Only internal IDs,
+    raw formatting artifacts, keyword dumps, and unsupported-claim guidance
+    are removed.
     """
-    lines = context.split("\n")
-    cleaned_lines = []
- 
-    # Disclaimer/instructional phrases that should cause a line to be removed
-    DISCLAIMER_PHRASES = [
+    if not context:
+        return ""
+
+    context = (
+        context.replace("\u00ad", "")
+        .replace("\ufffe", "-")
+        .replace("\r\n", "\n")
+        .replace("\r", "\n")
+    )
+
+    disclaimer_phrases = (
         "should not infer",
         "should not assign",
         "not documented in the provided sources",
@@ -111,164 +138,79 @@ def _clean_context_for_llm(context: str) -> str:
         "not included in the provided",
         "these values should be added only",
         "without verified information",
-    ]
- 
-    # Section headers that should be removed when they appear alone on a line
-    standalone_headers = {
-        "research problem", "approach", "dataset", "images", "keywords",
-        "key contributions", "methodology", "results", "conclusion",
-        "individual contribution", "evaluation limitation", "main finding",
-        "evaluated tracks", "models evaluated", "shared-task rankings",
-        "exact f1 results", "main result",
+        "unless those details are added to a future verified version",
+    )
+
+    limitation_headers = {
+        "evaluation limitation",
+        "evaluation information not provided",
+        "evaluation and safety limitations",
+        "thesis limitation in this knowledge source",
     }
- 
-    # Known metadata labels that should always be stripped from context.
-    # This targeted approach avoids false-positives on narrative sentences
-    # that happen to contain a colon (e.g., "His focus: NLP and vision systems").
-    metadata_labels_pattern = re.compile(
-        r'^[\s•◦▪\-*]*(?:'
-        r'Document ID|Authors?|Conference|Publisher|DOI link|DOI|Pages?|'
-        r'Code repository|Publication date|Conference abbreviation|'
-        r'Conference location|Team|Venue|Workshop abbreviation|'
-        r'Official paper link|Muhammad Junayed\'s author position|'
-        r'Employment type|Duration|Organization|Role|'
-        r'Source|Title|Volume|Issue|Journal|ISSN|ISBN|'
-        r'Affiliation|Institution|Department|Year|Date|'
-        r'Keywords|Abstract|References|Citation|'
-        r'Dataset|Common abbreviation|Common|Target classes|Target|'
-        r'Training type|Evaluation|Main|Shared|Exact|Individual|'
-        r'Comparison|Per-|Error'
-        r')[^:\n]{0,40}:\s+.+',
-        re.IGNORECASE
+
+    internal_label_pattern = re.compile(
+        r"^[\s•◦▪\-*]*(?:Document ID|Source|Chunk ID|Chunk Index)"
+        r"\s*:\s*.*$",
+        re.IGNORECASE,
     )
- 
-    # Fallback: lines with a short pre-colon segment (<=3 words, no lowercase verbs)
-    # that look like metadata labels rather than narrative sentences.
-    short_label_pattern = re.compile(
-        r'^[\s•◦▪\-*]*([A-Z][A-Za-z]*(?:\s+[A-Za-z]+){0,2}):\s+.+'
-    )
- 
-    prev_was_metadata = False
- 
-    for line in lines:
-        stripped = line.strip()
- 
-        # Skip empty lines (will re-add paragraph breaks later)
+
+    cleaned_lines = []
+    skip_limitation_block = False
+    skip_keyword_block = False
+
+    for raw_line in context.split("\n"):
+        stripped = raw_line.strip()
+
         if not stripped:
-            prev_was_metadata = False
-            cleaned_lines.append("")
+            if cleaned_lines and cleaned_lines[-1] != "":
+                cleaned_lines.append("")
             continue
- 
-        # Handle multi-line metadata values: if the previous line was stripped as
-        # metadata, also remove continuation lines (short lines without their own
-        # bullet, don't end with sentence-ending punctuation, and don't start a
-        # new sentence with a capital letter after whitespace).
-        if prev_was_metadata:
-            # A continuation line is typically short, has no bullet, and doesn't
-            # end with sentence-ending punctuation (., !, ?)
-            if (not re.match(r'^[•◦▪\-*]', stripped)
-                    and not stripped.endswith(('.', '!', '?'))
-                    and len(stripped.split()) <= 8):
-                # This looks like a continuation of the metadata value (e.g., "Systems")
-                continue
-            # If it does look like a new item, fall through to normal processing
-            prev_was_metadata = False
- 
-        # Skip lines matching known metadata labels (with or without bullet prefix)
-        if metadata_labels_pattern.match(stripped):
-            prev_was_metadata = True
+
+        lower = stripped.lower().rstrip(":").strip()
+
+        if lower in limitation_headers:
+            skip_limitation_block = True
             continue
- 
-        # Skip lines containing disclaimer/instructional phrases
-        stripped_lower = stripped.lower()
-        if any(phrase in stripped_lower for phrase in DISCLAIMER_PHRASES):
-            prev_was_metadata = False
+
+        if skip_limitation_block:
+            if lower == "keywords":
+                skip_limitation_block = False
+                skip_keyword_block = True
             continue
- 
-        # For lines matching a short label pattern (<=3 capitalized words before colon),
-        # only strip if the pre-colon segment looks like a metadata label, not a narrative.
-        # Narrative sentences typically have more context before the colon or start with
-        # pronouns/articles (His, The, A, etc.)
-        short_match = short_label_pattern.match(stripped)
-        if short_match:
-            pre_colon = short_match.group(1).strip()
-            pre_colon_words = pre_colon.split()
-            # If it's a single capitalized word or a 2-word capitalized phrase
-            # AND doesn't start with common narrative starters, treat as metadata.
-            # Examples that should be stripped: "Dataset: BUSI", "Role: Intern",
-            # "Common abbreviation: BUSI", "Target classes: Normal, benign"
-            # Examples that should survive: "His focus: NLP", "The goal: detection"
-            narrative_starters = {'his', 'her', 'the', 'a', 'an', 'my', 'our', 'their', 'its', 'this', 'that'}
-            if (len(pre_colon_words) <= 2
-                    and pre_colon_words[0].lower() not in narrative_starters):
-                # Looks like a metadata label (e.g., "Publisher: IEEE", "Dataset: BUSI")
-                # but NOT "His focus: NLP" or "The goal: detecting hallucinations"
-                prev_was_metadata = True
-                continue
- 
-        # Skip standalone section headers
-        if stripped.lower().rstrip(":").strip() in standalone_headers:
-            prev_was_metadata = False
+
+        if lower == "keywords":
+            skip_keyword_block = True
             continue
- 
-        # Catch-all: ANY line starting with a bullet char followed by word(s) and a colon
-        # is treated as metadata and stripped. Bullet-prefixed "Key: Value" patterns from
-        # the PDF are always structured metadata, never narrative prose.
-        if re.match(r'^[•◦▪]\s+[A-Za-z][^:]{0,60}:\s+', stripped):
-            prev_was_metadata = True
+
+        if skip_keyword_block:
             continue
- 
-        # Skip lines that are just URLs (DOI links, code repo links, etc.)
-        if re.match(r'^https?://', stripped):
+
+        if internal_label_pattern.match(stripped):
             continue
- 
-        # Skip "Information Not Provided" markers
-        if "information not provided" in stripped.lower():
+
+        if any(phrase in lower for phrase in disclaimer_phrases):
             continue
- 
-        # Skip lines that are just standalone labels like "Images"
-        if stripped in ("Images", "Keywords"):
+
+        if lower in {
+            "information not provided",
+            "the following information is not documented in the provided sources",
+            "the following values are not included in the source material",
+            "the following are not documented",
+        }:
             continue
- 
-        # Skip "Keywords" lines with semicolons (keyword lists)
-        if stripped.lower().startswith("keywords") and ";" in stripped:
-            continue
- 
-        # Skip standalone section numbers like "- 11." or "- 5."
-        if re.match(r'^[\-*•]\s*\d+\.?\s*$', stripped):
-            continue
- 
-        # Skip lines that are pure bullet points with no narrative content
-        # (e.g., lines that are just a bullet char or bullet + short label)
-        if re.match(r'^[•◦▪\-*]\s*$', stripped):
-            continue
- 
-        # Skip lines starting with bullet chars that look like list metadata
-        if re.match(r'^[•◦▪\-*]\s+[A-Z][^.!?]{0,80}$', stripped) and ':' not in stripped:
-            # This is a standalone bullet label without sentence structure - skip
-            # But keep it if it looks like a real sentence (has a verb-like structure)
-            words = stripped.lstrip('•◦▪-* ').split()
-            if len(words) <= 4:
-                continue
- 
-        cleaned_lines.append(line)
-        prev_was_metadata = False
- 
+
+        stripped = re.sub(r"^[•◦▪]\s*", "", stripped)
+        stripped = re.sub(r"^[*-]\s+(?=[A-Za-z])", "", stripped)
+
+        if stripped:
+            cleaned_lines.append(stripped)
+
     result = "\n".join(cleaned_lines)
-    # Collapse multiple blank lines
-    result = re.sub(r'\n{3,}', '\n\n', result)
-    # Remove any remaining lone bullet chars on their own line
-    result = re.sub(r'^\s*[•◦▪]\s*$', '', result, flags=re.MULTILINE)
-    # Remove trailing standalone section headers that appear at end of a line
-    # (e.g., "...breast-ultrasound images. Dataset" -> "...breast-ultrasound images.")
-    standalone_headers_pattern = '|'.join(re.escape(h.title()) for h in standalone_headers)
-    result = re.sub(
-        r'([.!?])\s+(?:' + standalone_headers_pattern + r')\s*$',
-        r'\1', result, flags=re.MULTILINE
-    )
+    result = re.sub(r"[ \t]+\n", "\n", result)
+    result = re.sub(r"\n{3,}", "\n\n", result)
     return result.strip()
- 
- 
+
+
 async def generate_response(user_message: str) -> dict:
     """Generate a response using RAG: query vector store for context, then call HuggingFace."""
     # Handle greetings directly (before off-topic check)
@@ -399,6 +341,20 @@ def _clean_response(text: str) -> str:
             else:
                 text = ""
  
+    # Remove section headers used as prefixes while preserving the answer text.
+    section_headers = (
+        r"Research Problem|Approach|Dataset|Images|Keywords|Key Contributions|"
+        r"Methodology|Results|Conclusion|Individual Contribution|"
+        r"Evaluation Limitation|Main Finding|Evaluated Tracks|Models Evaluated|"
+        r"Shared-Task Rankings|Exact F1 Results|Main Result"
+    )
+    text = re.sub(
+        rf"^\s*(?:{section_headers})\s*:?\s+(?=\S)",
+        "",
+        text,
+        flags=re.MULTILINE | re.IGNORECASE,
+    )
+
     # Remove ANY line matching "Label: value" metadata pattern (with or without bullet)
     # This catches Document ID, Authors, Conference, DOI, Publisher, Pages, etc.
     metadata_labels = (
@@ -417,8 +373,7 @@ def _clean_response(text: str) -> str:
         '', text, flags=re.MULTILINE | re.IGNORECASE
     )
  
-    # Remove section headers appearing alone on a line
-    section_headers = r"Research Problem|Approach|Dataset|Images|Keywords|Key Contributions|Methodology|Results|Conclusion|Individual Contribution|Evaluation Limitation|Main Finding|Evaluated Tracks|Models Evaluated|Shared-Task Rankings|Exact F1 Results|Main Result"
+    # Remove section headers appearing alone on a line.
     text = re.sub(
         rf'^\s*(?:{section_headers})\s*:?\s*$',
         '',
@@ -458,6 +413,33 @@ def _clean_response(text: str) -> str:
     # Remove standalone URLs
     text = re.sub(r'^\s*https?://[^\s]+\s*$', '', text, flags=re.MULTILINE)
  
+    # Remove leaked disclaimer/instruction sentences from generated prose.
+    response_disclaimer_phrases = (
+        "should not infer",
+        "should not assign",
+        "not documented in the provided sources",
+        "not specified in the provided sources",
+        "not included in the source material",
+        "should be added only after verification",
+        "do not identify specific",
+        "exact responsibilities are not documented",
+        "chatbot should not",
+        "are not included in the provided sources",
+        "not included in the provided",
+        "these values should be added only",
+        "without verified information",
+    )
+    response_sentences = re.split(r'(?<=[.!?])\s+', text)
+    text = " ".join(
+        sentence.strip()
+        for sentence in response_sentences
+        if sentence.strip()
+        and not any(
+            phrase in sentence.lower()
+            for phrase in response_disclaimer_phrases
+        )
+    )
+
     # Collapse multiple newlines into max 2
     text = re.sub(r'\n{3,}', '\n\n', text)
  
