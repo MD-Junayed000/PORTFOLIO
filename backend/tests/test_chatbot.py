@@ -109,6 +109,38 @@ class TestCleanContextForLLM:
         assert "Images" not in result
         assert "CNN architectures" in result
 
+    def test_preserves_narrative_with_colon(self):
+        """Colon-containing narrative sentences must survive the context cleaner.
+        This is the primary false-positive risk - sentences like 'His specialty: X'
+        should NOT be stripped even though they contain a colon pattern."""
+        context = (
+            "His specialty: machine learning and NLP.\n"
+            "His research focus: detecting hallucinations in language models.\n"
+            "The goal: building robust AI systems for production use."
+        )
+        result = _clean_context_for_llm(context)
+        assert "His specialty: machine learning and NLP" in result
+        assert "His research focus: detecting hallucinations" in result
+        assert "The goal: building robust AI systems" in result
+
+    def test_preserves_narrative_colon_with_metadata(self):
+        """Narrative sentences with colons survive while metadata is still stripped."""
+        context = (
+            "• Document ID: doc_789\n"
+            "• Authors: Muhammad Junayed\n"
+            "His specialty: machine learning and NLP.\n"
+            "The approach: using transformer architectures for detection.\n"
+            "• DOI: 10.1109/example\n"
+            "He works on several areas including: vision, NLP, and speech."
+        )
+        result = _clean_context_for_llm(context)
+        assert "Document ID" not in result
+        assert "Authors:" not in result
+        assert "DOI:" not in result
+        assert "His specialty: machine learning and NLP" in result
+        assert "The approach: using transformer architectures" in result
+        assert "He works on several areas including" in result
+
 
 class TestCleanResponse:
     """Test _clean_response removes metadata echoed by the LLM."""
@@ -183,6 +215,18 @@ class TestCleanResponse:
         result = _clean_response(text)
         assert "Muhammad Junayed is a final-year student" in result
         assert "specializes in AI" in result
+
+    def test_preserves_prose_starting_with_dash(self):
+        """Lines starting with dash that are valid prose sentences should NOT be stripped."""
+        text = (
+            "Muhammad Junayed focuses on NLP research.\n"
+            "- His work on hallucination detection has been published at IEEE conferences and received positive reviews from the community.\n"
+            "He is based in Bangladesh."
+        )
+        result = _clean_response(text)
+        # The long prose sentence with terminal punctuation should survive
+        assert "hallucination detection" in result
+        assert "Muhammad Junayed focuses on NLP research" in result
 
 
 class TestIsOffTopic:

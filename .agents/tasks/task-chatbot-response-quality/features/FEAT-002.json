@@ -1,0 +1,25 @@
+{
+  "id": "FEAT-002",
+  "type": "fix",
+  "description": "Address review issues: tighten over-broad context cleaner regex, limit bullet-stripping in _clean_response to metadata-like lines, add test for colon-containing narrative surviving cleaner, and add timeout budget comment to retry logic.",
+  "status": "in_progress",
+  "steps": [
+    "1. Fix _clean_context_for_llm() regex to not strip narrative sentences with colons. Either enumerate known metadata labels (matching _clean_response approach) or require pre-colon segment to be short (<=3 words) and match metadata-like pattern.",
+    "2. Fix _clean_response() bullet-stripping regex to only remove lines starting with dash/asterisk that also look like metadata (have colon pattern or are short label-like items).",
+    "3. Add test in test_chatbot.py verifying that colon-containing narrative sentences like 'His specialty: machine learning and NLP' SURVIVE the context cleaner.",
+    "4. Add timeout budget comment to retry logic in generate_response() acknowledging worst-case latency, and pass a shorter timeout to the retry call."
+  ],
+  "acceptance_criteria": [
+    "_clean_context_for_llm() preserves narrative sentences containing colons like 'His specialty: machine learning and NLP'",
+    "_clean_context_for_llm() still strips known metadata like 'Document ID: pub_123', 'Authors: Name', 'Conference: ICAEEE'",
+    "_clean_response() bullet-stripping only removes lines that look like metadata, not valid prose starting with dashes",
+    "Test exists and passes for colon-containing narrative surviving the context cleaner",
+    "Retry logic has a comment about worst-case latency and uses a shorter timeout on retry",
+    "All existing tests still pass"
+  ],
+  "verification": [
+    "cd /projects/sandbox/PORTFOLIO/backend && TESTING=true SECRET_KEY=test-key python -m pytest tests/ -v"
+  ],
+  "blocked_reason": null,
+  "findings": null
+}
