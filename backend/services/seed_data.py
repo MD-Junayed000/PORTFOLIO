@@ -1,3 +1,4 @@
+import gc
 import logging
 import os
 from typing import Optional
@@ -250,6 +251,7 @@ def seed_vector_store():
     logger.info("Ingesting canonical PDF: %s", pdf_path)
     try:
         doc_ids = process_pdf(pdf_path)
+        gc.collect()
         logger.info(
             "Successfully ingested canonical PDF: %d chunks created.",
             len(doc_ids),
