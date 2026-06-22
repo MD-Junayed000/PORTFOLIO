@@ -1,28 +1,32 @@
+from __future__ import annotations
+
 import gc
+import hashlib
 import logging
 import math
-import re
 import os
+import re
+import threading
 import uuid
 from collections import Counter
-from typing import Dict, List, Optional, Tuple
- 
+from pathlib import Path
+from typing import Any, Dict, List, Optional, Tuple
+
 import chromadb
 from PyPDF2 import PdfReader
- 
+
 from config import settings
- 
+
 logger = logging.getLogger(__name__)
- 
- 
-_client: Optional[chromadb.ClientAPI] = None
-_collection = None
- 
-# Global BM25 index instance
+
+COLLECTION_NAME = "portfolio_knowledge"
+
+_client: Optional[Any] = None
+_collection: Optional[Any] = None
 _bm25_index: Optional["SimpleBM25"] = None
- 
- 
-# --- Entity type mapping based on section numbers ---
+_index_lock = threading.RLock()
+
+
 SECTION_ENTITY_MAP = {
     "1": "profile",
     "2": "profile",
@@ -38,8 +42,7 @@ SECTION_ENTITY_MAP = {
     "12": "award",
     "13": "language",
 }
- 
-# Section relevance mapping for query boosting
+
 QUERY_SECTION_BOOST = {
     "project": ["10"],
     "skill": ["7"],
@@ -51,126 +54,227 @@ QUERY_SECTION_BOOST = {
     "profile": ["1", "2"],
     "extracurricular": ["11"],
 }
- 
- 
+
+
 class SimpleBM25:
-    """Simple BM25 implementation for keyword search - no external dependencies."""
- 
-    def __init__(self):
+    """Small in-memory BM25 index with update and delete support."""
+
+    def __init__(self) -> None:
         self.docs: List[List[str]] = []
         self.doc_ids: List[str] = []
-        self.avg_dl: float = 0
+        self.avg_dl: float = 0.0
         self.doc_count: int = 0
         self.idf: Dict[str, float] = {}
- 
-    def add_documents(self, documents: List[str], doc_ids: List[str] = None):
-        """Add documents to the BM25 index."""
-        for i, doc in enumerate(documents):
-            tokens = self._tokenize(doc)
-            self.docs.append(tokens)
-            if doc_ids:
-                self.doc_ids.append(doc_ids[i])
-            else:
-                self.doc_ids.append(str(len(self.docs) - 1))
+        self._documents_by_id: Dict[str, List[str]] = {}
+        self._lock = threading.RLock()
+
+    @staticmethod
+    def _tokenize(text: str) -> List[str]:
+        return re.findall(r"\b[a-zA-Z0-9][a-zA-Z0-9_+#.-]*\b", text.lower())
+
+    def _rebuild(self) -> None:
+        self.doc_ids = list(self._documents_by_id.keys())
+        self.docs = [self._documents_by_id[doc_id] for doc_id in self.doc_ids]
         self.doc_count = len(self.docs)
-        self.avg_dl = sum(len(d) for d in self.docs) / max(self.doc_count, 1)
-        self._compute_idf()
- 
-    def _tokenize(self, text: str) -> List[str]:
-        """Tokenize text into lowercase words (min 2 chars)."""
-        return re.findall(r'\b[a-zA-Z]{2,}\b', text.lower())
- 
-    def _compute_idf(self):
-        """Compute inverse document frequency for all terms."""
-        df: Counter = Counter()
+        self.avg_dl = (
+            sum(len(doc) for doc in self.docs) / self.doc_count
+            if self.doc_count
+            else 0.0
+        )
+
+        document_frequency: Counter[str] = Counter()
         for doc in self.docs:
-            unique_terms = set(doc)
-            for term in unique_terms:
-                df[term] += 1
-        self.idf = {}
-        for term, freq in df.items():
-            self.idf[term] = math.log(
-                (self.doc_count - freq + 0.5) / (freq + 0.5) + 1
+            document_frequency.update(set(doc))
+
+        self.idf = {
+            term: math.log(
+                (self.doc_count - frequency + 0.5) / (frequency + 0.5) + 1.0
             )
- 
+            for term, frequency in document_frequency.items()
+        }
+
+    def add_documents(
+        self,
+        documents: List[str],
+        doc_ids: Optional[List[str]] = None,
+    ) -> None:
+        if doc_ids is not None and len(documents) != len(doc_ids):
+            raise ValueError("documents and doc_ids must have the same length")
+
+        with self._lock:
+            for index, document in enumerate(documents):
+                doc_id = (
+                    doc_ids[index]
+                    if doc_ids is not None
+                    else str(uuid.uuid4())
+                )
+                self._documents_by_id[doc_id] = self._tokenize(document)
+            self._rebuild()
+
+    def delete_documents(self, doc_ids: List[str]) -> None:
+        with self._lock:
+            for doc_id in doc_ids:
+                self._documents_by_id.pop(doc_id, None)
+            self._rebuild()
+
     def search(self, query: str, top_k: int = 5) -> List[Tuple[int, float]]:
-        """Search for documents matching query. Returns list of (index, score)."""
+        if top_k <= 0:
+            return []
+
         query_tokens = self._tokenize(query)
-        scores: List[Tuple[int, float]] = []
-        k1, b = 1.5, 0.75
-        for idx, doc in enumerate(self.docs):
-            score = 0.0
-            doc_len = len(doc)
-            tf_counter = Counter(doc)
-            for term in query_tokens:
-                if term in self.idf:
-                    tf = tf_counter.get(term, 0)
-                    numerator = tf * (k1 + 1)
-                    denominator = tf + k1 * (1 - b + b * doc_len / max(self.avg_dl, 1))
+        if not query_tokens:
+            return []
+
+        with self._lock:
+            scores: List[Tuple[int, float]] = []
+            k1, b = 1.5, 0.75
+
+            for index, doc in enumerate(self.docs):
+                score = 0.0
+                doc_len = len(doc)
+                term_frequency = Counter(doc)
+
+                for term in query_tokens:
+                    if term not in self.idf:
+                        continue
+
+                    tf = term_frequency.get(term, 0)
+                    if tf == 0:
+                        continue
+
+                    numerator = tf * (k1 + 1.0)
+                    denominator = tf + k1 * (
+                        1.0 - b + b * doc_len / max(self.avg_dl, 1.0)
+                    )
                     score += self.idf[term] * numerator / denominator
-            scores.append((idx, score))
-        scores.sort(key=lambda x: x[1], reverse=True)
-        return scores[:top_k]
- 
-    def clear(self):
-        """Clear all documents from the index."""
-        self.docs = []
-        self.doc_ids = []
-        self.avg_dl = 0
-        self.doc_count = 0
-        self.idf = {}
- 
- 
+
+                if score > 0.0:
+                    scores.append((index, score))
+
+            scores.sort(key=lambda item: item[1], reverse=True)
+            return scores[:top_k]
+
+    def clear(self) -> None:
+        with self._lock:
+            self._documents_by_id.clear()
+            self._rebuild()
+
+
 def get_bm25_index() -> SimpleBM25:
-    """Get or create the global BM25 index."""
     global _bm25_index
     if _bm25_index is None:
         _bm25_index = SimpleBM25()
     return _bm25_index
- 
- 
-def get_chroma_client():
+
+
+def get_chroma_client() -> Any:
     global _client
+
     if _client is None:
-        os.makedirs(settings.CHROMA_PERSIST_DIR, exist_ok=True)
+        persist_dir = Path(settings.CHROMA_PERSIST_DIR)
+        persist_dir.mkdir(parents=True, exist_ok=True)
+
         _client = chromadb.PersistentClient(
-            path=settings.CHROMA_PERSIST_DIR,
+            path=str(persist_dir),
             settings=chromadb.Settings(anonymized_telemetry=False),
         )
+
     return _client
- 
- 
-def initialize_collection():
-    global _collection
+
+
+def _create_or_get_collection(client: Any) -> Any:
+    """Use the current Chroma configuration API, with a legacy fallback."""
+    try:
+        return client.get_or_create_collection(
+            name=COLLECTION_NAME,
+            configuration={"hnsw": {"space": "cosine"}},
+        )
+    except TypeError:
+        # Compatibility with older Chroma releases.
+        return client.get_or_create_collection(
+            name=COLLECTION_NAME,
+            metadata={"hnsw:space": "cosine"},
+        )
+
+
+def rebuild_bm25_from_collection(batch_size: int = 200) -> None:
+    """Rebuild the in-memory BM25 index from persistent Chroma records."""
+    collection = get_collection()
+    bm25 = get_bm25_index()
+    bm25.clear()
+
+    total = collection.count()
+    for offset in range(0, total, batch_size):
+        batch = collection.get(
+            limit=batch_size,
+            offset=offset,
+            include=["documents"],
+        )
+        ids = batch.get("ids") or []
+        documents = batch.get("documents") or []
+
+        valid_ids: List[str] = []
+        valid_documents: List[str] = []
+        for doc_id, document in zip(ids, documents):
+            if document:
+                valid_ids.append(doc_id)
+                valid_documents.append(document)
+
+        if valid_documents:
+            bm25.add_documents(valid_documents, valid_ids)
+
+
+def initialize_collection() -> Any:
+    global _client, _collection
+
+    if _collection is not None:
+        return _collection
+
     try:
         client = get_chroma_client()
-        _collection = client.get_or_create_collection(
-            name="portfolio_knowledge",
-            metadata={"hnsw:space": "cosine"},
+        _collection = _create_or_get_collection(client)
+    except Exception as exc:
+        logger.exception(
+            "Persistent ChromaDB initialization failed; using an ephemeral "
+            "in-memory collection: %s",
+            exc,
         )
-    except Exception as e:
-        logger.warning(
-            "ChromaDB persistent client failed, falling back to in-memory mode: %s",
-            str(e),
+        _client = chromadb.Client(
+            settings=chromadb.Settings(anonymized_telemetry=False)
         )
-        global _client
-        _client = chromadb.Client()
-        _collection = _client.get_or_create_collection(
-            name="portfolio_knowledge",
-            metadata={"hnsw:space": "cosine"},
-        )
+        _collection = _create_or_get_collection(_client)
+
+    try:
+        rebuild_bm25_from_collection()
+    except Exception as exc:
+        logger.exception("Could not rebuild BM25 from ChromaDB: %s", exc)
+
     return _collection
- 
- 
-def get_collection():
+
+
+def get_collection() -> Any:
     global _collection
     if _collection is None:
-        initialize_collection()
+        return initialize_collection()
     return _collection
- 
- 
+
+
+def _normalize_metadata(metadata: Optional[Dict]) -> Dict:
+    """Return Chroma-safe scalar metadata without mutating the caller's dict."""
+    normalized: Dict[str, Any] = {}
+
+    for key, value in (metadata or {}).items():
+        if value is None:
+            continue
+        if isinstance(value, (str, int, float, bool)):
+            normalized[str(key)] = value
+        else:
+            normalized[str(key)] = str(value)
+
+    return normalized
+
+
 def extract_keywords(text: str) -> str:
-    """Extract top keywords from text for metadata storage."""
     stop_words = {
         "the", "a", "an", "is", "are", "was", "were", "be", "been", "being",
         "have", "has", "had", "do", "does", "did", "will", "would", "could",
@@ -186,51 +290,40 @@ def extract_keywords(text: str) -> str:
         "these", "those", "it", "its", "he", "she", "they", "them",
         "his", "her", "their", "what", "which", "who", "whom",
     }
-    words = re.findall(r'\b[a-zA-Z]{3,}\b', text.lower())
-    word_freq: Dict[str, int] = {}
-    for word in words:
-        if word not in stop_words:
-            word_freq[word] = word_freq.get(word, 0) + 1
-    sorted_words = sorted(word_freq.items(), key=lambda x: x[1], reverse=True)
-    top_keywords = [w for w, _ in sorted_words[:10]]
-    return ",".join(top_keywords)
- 
- 
+
+    words = re.findall(r"\b[a-zA-Z]{3,}\b", text.lower())
+    frequencies = Counter(word for word in words if word not in stop_words)
+    return ",".join(word for word, _ in frequencies.most_common(10))
+
+
 def _get_entity_type(section_number: str) -> str:
-    """Map a section number to its entity type."""
-    # Get the top-level section number
     top_level = section_number.split(".")[0]
     return SECTION_ENTITY_MAP.get(top_level, "profile")
- 
- 
+
+
 def _clean_pdf_text(text: str) -> str:
-    """Remove repeated page headers and page markers from PDF text."""
-    # Remove "Page X" markers (standalone on a line or at boundaries)
-    text = re.sub(r'\bPage\s+\d+\b', '', text, flags=re.IGNORECASE)
-    # Remove repeated portfolio header
+    text = text.replace("\r\n", "\n").replace("\r", "\n")
+    text = re.sub(r"(?im)^\s*Page\s+\d+(?:\s+of\s+\d+)?\s*$", "", text)
     text = re.sub(
-        r'Muhammad\s+Junayed\s*[-\u2013\u2014]\s*Complete\s+Portfolio[^\n]*\n?',
-        '',
+        r"(?im)^\s*Muhammad\s+Junayed\s*[-\u2013\u2014]\s*"
+        r"Complete\s+Portfolio[^\n]*$",
+        "",
         text,
-        flags=re.IGNORECASE,
     )
-    # Clean up excessive blank lines
-    text = re.sub(r'\n{3,}', '\n\n', text)
+    text = re.sub(r"[ \t]+\n", "\n", text)
+    text = re.sub(r"\n{3,}", "\n\n", text)
     return text.strip()
- 
- 
+
+
 def _parse_sections(text: str) -> List[Dict]:
-    """Parse PDF text into sections based on numbered headings.
- 
-    Returns a list of dicts with keys: heading, section_number, subsection, text, entity_type
-    """
-    # Pattern to match section headings like "1. Professional Profile" or "10.3 Some Project"
-    heading_pattern = re.compile(r'^(\d+(?:\.\d+)*)\s+(.+)$', re.MULTILINE)
- 
+    """Parse headings 1-13, accepting both `1 Title` and `1. Title`."""
+    heading_pattern = re.compile(
+        r"^((?:[1-9]|1[0-3])(?:\.\d+)*)(?:\.)?\s+(.+?)\s*$",
+        re.MULTILINE,
+    )
     matches = list(heading_pattern.finditer(text))
- 
+
     if not matches:
-        # No headings found, return entire text as one section
         return [{
             "heading": "General",
             "section_number": "1",
@@ -238,413 +331,506 @@ def _parse_sections(text: str) -> List[Dict]:
             "text": text.strip(),
             "entity_type": "profile",
         }]
- 
-    sections = []
-    for i, match in enumerate(matches):
+
+    sections: List[Dict] = []
+    for index, match in enumerate(matches):
         section_number = match.group(1)
         heading_title = match.group(2).strip()
         start = match.end()
-        end = matches[i + 1].start() if i + 1 < len(matches) else len(text)
- 
+        end = (
+            matches[index + 1].start()
+            if index + 1 < len(matches)
+            else len(text)
+        )
+
         section_text = text[start:end].strip()
- 
-        # Determine subsection
-        subsection = None
-        if "." in section_number:
-            # It's a subsection (e.g., "3.1")
-            parts = section_number.split(".")
-            subsection = heading_title
- 
-        entity_type = _get_entity_type(section_number)
- 
+        if not section_text:
+            continue
+
         sections.append({
             "heading": heading_title,
             "section_number": section_number,
-            "subsection": subsection,
+            "subsection": heading_title if "." in section_number else None,
             "text": section_text,
-            "entity_type": entity_type,
+            "entity_type": _get_entity_type(section_number),
         })
- 
+
     return sections
- 
- 
+
+
+def _hard_split_text(
+    text: str,
+    max_chars: int,
+    overlap_chars: int,
+) -> List[str]:
+    """Split oversized text while preserving sentence/word boundaries."""
+    sentences = re.split(r"(?<=[.!?])\s+", text.strip())
+    pieces: List[str] = []
+    current = ""
+
+    for sentence in sentences:
+        sentence = sentence.strip()
+        if not sentence:
+            continue
+
+        if len(sentence) > max_chars:
+            words = sentence.split()
+            word_block = ""
+            for word in words:
+                candidate = f"{word_block} {word}".strip()
+                if word_block and len(candidate) > max_chars:
+                    pieces.append(word_block)
+                    overlap = word_block[-overlap_chars:].lstrip()
+                    word_block = f"{overlap} {word}".strip()
+                else:
+                    word_block = candidate
+            if word_block:
+                if current:
+                    pieces.append(current)
+                    current = ""
+                pieces.append(word_block)
+            continue
+
+        candidate = f"{current} {sentence}".strip()
+        if current and len(candidate) > max_chars:
+            pieces.append(current)
+            overlap = current[-overlap_chars:].lstrip()
+            current = f"{overlap} {sentence}".strip()
+        else:
+            current = candidate
+
+    if current:
+        pieces.append(current)
+
+    return pieces or [text.strip()]
+
+
 def _split_section_into_chunks(
     section: Dict,
     max_chars: int = 2500,
     overlap_chars: int = 240,
 ) -> List[Dict]:
-    """Split a section into chunks if it exceeds max_chars.
- 
-    Splits at paragraph boundaries within the section.
-    Target: 500-700 tokens (~2000-2800 chars).
-    Overlap: 60 tokens (~240 chars).
-    """
-    text = section["text"]
- 
+    text = section["text"].strip()
+    if not text:
+        return []
+
     if len(text) <= max_chars:
-        # Section fits in one chunk
-        return [section]
- 
-    # Split at paragraph boundaries (double newline or single newline followed by content)
-    paragraphs = re.split(r'\n\s*\n', text)
- 
-    chunks = []
-    current_chunk_text = ""
- 
-    for para in paragraphs:
-        para = para.strip()
-        if not para:
-            continue
- 
-        if current_chunk_text and len(current_chunk_text) + len(para) + 2 > max_chars:
-            # Save current chunk
-            chunk_data = section.copy()
-            chunk_data["text"] = current_chunk_text.strip()
-            chunks.append(chunk_data)
- 
-            # Start new chunk with overlap from end of previous
-            if len(current_chunk_text) > overlap_chars:
-                overlap_text = current_chunk_text[-overlap_chars:]
-                # Try to start at a word/sentence boundary
-                space_idx = overlap_text.find(" ")
-                if space_idx != -1:
-                    overlap_text = overlap_text[space_idx + 1:]
-                current_chunk_text = overlap_text + "\n\n" + para
+        return [section.copy()]
+
+    paragraphs = [
+        paragraph.strip()
+        for paragraph in re.split(r"\n\s*\n", text)
+        if paragraph.strip()
+    ]
+
+    text_chunks: List[str] = []
+    current = ""
+
+    for paragraph in paragraphs:
+        paragraph_parts = (
+            _hard_split_text(paragraph, max_chars, overlap_chars)
+            if len(paragraph) > max_chars
+            else [paragraph]
+        )
+
+        for part in paragraph_parts:
+            candidate = f"{current}\n\n{part}".strip()
+            if current and len(candidate) > max_chars:
+                text_chunks.append(current.strip())
+                overlap = current[-overlap_chars:].lstrip()
+                current = f"{overlap}\n\n{part}".strip()
             else:
-                current_chunk_text = para
-        else:
-            if current_chunk_text:
-                current_chunk_text += "\n\n" + para
-            else:
-                current_chunk_text = para
- 
-    # Handle remaining text
-    if current_chunk_text.strip():
-        # If remaining text is very short, merge with last chunk if possible
-        if chunks and len(current_chunk_text) < 200:
-            chunks[-1]["text"] += "\n\n" + current_chunk_text.strip()
-        else:
-            chunk_data = section.copy()
-            chunk_data["text"] = current_chunk_text.strip()
-            chunks.append(chunk_data)
- 
-    return chunks if chunks else [section]
- 
- 
+                current = candidate
+
+    if current:
+        text_chunks.append(current.strip())
+
+    chunks: List[Dict] = []
+    for chunk_index, chunk_text in enumerate(text_chunks):
+        chunk = section.copy()
+        chunk["text"] = chunk_text
+        chunk["section_chunk_index"] = chunk_index
+        chunks.append(chunk)
+
+    return chunks
+
+
 def chunk_pdf_by_headings(text: str) -> List[Dict]:
-    """Main chunking function: heading-aware semantic chunking for the canonical PDF.
- 
-    Returns list of dicts with: text, heading, section_number, subsection, entity_type
-    """
-    # Clean the text first
     cleaned = _clean_pdf_text(text)
- 
-    # Parse into sections
     sections = _parse_sections(cleaned)
- 
-    # Split large sections into smaller chunks
-    all_chunks = []
+
+    chunks: List[Dict] = []
     for section in sections:
-        chunks = _split_section_into_chunks(section)
-        all_chunks.extend(chunks)
- 
-    return all_chunks
- 
- 
-def add_document(text: str, metadata: Dict = None, doc_id: str = None) -> str:
-    """Add a single document to the vector store and BM25 index."""
+        chunks.extend(_split_section_into_chunks(section))
+    return chunks
+
+
+def add_document(
+    text: str,
+    metadata: Optional[Dict] = None,
+    doc_id: Optional[str] = None,
+) -> str:
+    if not text or not text.strip():
+        raise ValueError("text must not be empty")
+
     collection = get_collection()
-    if doc_id is None:
-        doc_id = str(uuid.uuid4())
-    if metadata is None:
-        metadata = {}
-    # Add keywords to metadata if not already present
-    if "keywords" not in metadata:
-        metadata["keywords"] = extract_keywords(text)
-    collection.add(
-        documents=[text],
-        metadatas=[metadata],
-        ids=[doc_id],
+    final_doc_id = doc_id or str(uuid.uuid4())
+
+    final_metadata = _normalize_metadata(metadata)
+    final_metadata.setdefault("keywords", extract_keywords(text))
+
+    collection.upsert(
+        documents=[text.strip()],
+        metadatas=[final_metadata],
+        ids=[final_doc_id],
     )
-    # Also add to BM25 index
-    bm25 = get_bm25_index()
-    bm25.add_documents([text], [doc_id])
-    return doc_id
- 
- 
+
+    get_bm25_index().add_documents([text.strip()], [final_doc_id])
+    return final_doc_id
+
+
 def add_documents_batch(
     texts: List[str],
     metadatas: List[Dict],
     doc_ids: List[str],
+    batch_size: int = 32,
 ) -> List[str]:
-    """Add multiple documents to both ChromaDB and BM25 index one at a time to keep memory low."""
+    if not (len(texts) == len(metadatas) == len(doc_ids)):
+        raise ValueError("texts, metadatas, and doc_ids must have equal lengths")
+    if batch_size <= 0:
+        raise ValueError("batch_size must be positive")
+
     collection = get_collection()
-    bm25 = get_bm25_index()
- 
-    for i in range(len(texts)):
-        meta = metadatas[i]
-        if "keywords" not in meta:
-            meta["keywords"] = extract_keywords(texts[i])
-        # Add one at a time to keep memory low
-        collection.add(
-            documents=[texts[i]],
-            metadatas=[meta],
-            ids=[doc_ids[i]],
+
+    cleaned_texts: List[str] = []
+    cleaned_metadatas: List[Dict] = []
+    cleaned_ids: List[str] = []
+
+    for text, metadata, doc_id in zip(texts, metadatas, doc_ids):
+        if not text or not text.strip():
+            continue
+
+        clean_text = text.strip()
+        clean_metadata = _normalize_metadata(metadata)
+        clean_metadata.setdefault("keywords", extract_keywords(clean_text))
+
+        cleaned_texts.append(clean_text)
+        cleaned_metadatas.append(clean_metadata)
+        cleaned_ids.append(doc_id)
+
+    for start in range(0, len(cleaned_texts), batch_size):
+        end = start + batch_size
+        collection.upsert(
+            documents=cleaned_texts[start:end],
+            metadatas=cleaned_metadatas[start:end],
+            ids=cleaned_ids[start:end],
         )
- 
-    # Add all to BM25 (lightweight - just stores tokenized words)
-    bm25.add_documents(texts, doc_ids)
- 
-    return doc_ids
- 
- 
+
+    get_bm25_index().add_documents(cleaned_texts, cleaned_ids)
+    return cleaned_ids
+
+
 def _get_section_boost(question: str, chunk_metadata: Dict) -> float:
-    """Calculate section relevance boost based on question content and chunk section."""
+    """Return a normalized category match: either 0.0 or 1.0."""
     question_lower = question.lower()
-    section_number = chunk_metadata.get("section_number", "")
+    section_number = str(chunk_metadata.get("section_number", ""))
     top_section = section_number.split(".")[0] if section_number else ""
- 
-    boost = 0.0
-    # Check if question mentions category keywords that map to sections
+
     boost_keywords = {
-        "project": ["project", "built", "developed", "made", "created", "app", "application"],
-        "skill": ["skill", "technology", "proficient", "know", "stack", "framework", "tool"],
-        "experience": ["experience", "work", "job", "intern", "company", "employ", "role"],
-        "education": ["education", "university", "degree", "study", "course", "gpa", "cgpa"],
-        "research": ["research", "paper", "publication", "thesis", "conference", "journal"],
-        "award": ["award", "achievement", "honor", "prize", "recognition", "winner"],
-        "language": ["language", "speak", "fluent", "bangla", "english"],
-        "profile": ["who", "about", "introduce", "summary", "overview", "junayed", "muhammad", "tell me about", "background", "himself"],
-        "extracurricular": ["extracurricular", "volunteer", "club", "activity", "organization"],
+        "project": [
+            "project", "built", "developed", "made", "created", "app",
+            "application",
+        ],
+        "skill": [
+            "skill", "technology", "proficient", "know", "stack",
+            "framework", "tool",
+        ],
+        "experience": [
+            "experience", "work", "job", "intern", "company", "employ", "role",
+        ],
+        "education": [
+            "education", "university", "degree", "study", "course", "gpa",
+            "cgpa",
+        ],
+        "research": [
+            "research", "paper", "publication", "thesis", "conference",
+            "journal",
+        ],
+        "award": [
+            "award", "achievement", "honor", "prize", "recognition", "winner",
+        ],
+        "language": [
+            "language", "speak", "fluent", "bangla", "english",
+        ],
+        "profile": [
+            "who", "about", "introduce", "summary", "overview", "background",
+        ],
+        "extracurricular": [
+            "extracurricular", "volunteer", "club", "activity", "organization",
+        ],
     }
- 
+
     for category, keywords in boost_keywords.items():
-        if any(kw in question_lower for kw in keywords):
-            relevant_sections = QUERY_SECTION_BOOST.get(category, [])
-            if top_section in relevant_sections:
-                boost += 5.0
-                break
- 
-    return boost
- 
- 
+        if any(keyword in question_lower for keyword in keywords):
+            if top_section in QUERY_SECTION_BOOST.get(category, []):
+                return 1.0
+            return 0.0
+
+    return 0.0
+
+
 def _rerank_results(
     results: List[Dict],
     question: str,
     bm25_scores: Dict[str, float],
 ) -> List[Dict]:
-    """Re-rank results using vector similarity, BM25 scores, and section relevance."""
-    scored = []
+    if not results:
+        return []
+
+    max_bm25 = max(bm25_scores.values(), default=0.0)
+    scored: List[Tuple[float, Dict]] = []
+
     for result in results:
         doc_id = result.get("doc_id", "")
- 
-        # (1) Vector similarity score (convert distance to similarity)
-        # ChromaDB cosine distance: 0 = identical, 2 = opposite
-        distance = result.get("distance", 1.0)
-        vector_score = max(0, 1.0 - distance / 2.0)  # Normalize to 0-1
- 
-        # (2) BM25 keyword score (already computed)
-        bm25_score = bm25_scores.get(doc_id, 0.0)
-        # Normalize BM25 score relative to max
-        max_bm25 = max(bm25_scores.values()) if bm25_scores else 1.0
-        normalized_bm25 = bm25_score / max(max_bm25, 0.001)
- 
-        # (3) Section relevance boost
-        section_boost = _get_section_boost(question, result.get("metadata", {}))
- 
-        # Combined score: weighted sum
-        combined_score = (
-            vector_score * 0.4
-            + normalized_bm25 * 0.35
-            + section_boost * 0.25
+        distance = float(result.get("distance", 1.0))
+
+        # For cosine distance d = 1 - cosine_similarity, this maps [-1, 1]
+        # cosine similarity into [0, 1].
+        vector_score = min(1.0, max(0.0, 1.0 - distance / 2.0))
+
+        raw_bm25 = bm25_scores.get(doc_id, 0.0)
+        normalized_bm25 = raw_bm25 / max_bm25 if max_bm25 > 0 else 0.0
+
+        section_score = _get_section_boost(
+            question,
+            result.get("metadata") or {},
         )
-        result["combined_score"] = combined_score
-        scored.append((combined_score, result))
- 
-    scored.sort(key=lambda x: x[0], reverse=True)
-    return [item for _, item in scored]
- 
- 
+
+        combined_score = (
+            0.55 * vector_score
+            + 0.35 * normalized_bm25
+            + 0.10 * section_score
+        )
+
+        ranked_result = dict(result)
+        ranked_result["vector_score"] = vector_score
+        ranked_result["bm25_score"] = normalized_bm25
+        ranked_result["section_score"] = section_score
+        ranked_result["combined_score"] = combined_score
+        scored.append((combined_score, ranked_result))
+
+    scored.sort(key=lambda item: item[0], reverse=True)
+    return [result for _, result in scored]
+
+
 def query(question: str, n_results: int = 5) -> List[Dict]:
-    """Hybrid retrieval: ChromaDB vector search + BM25 keyword search, merged and re-ranked.
- 
-    Returns top n_results chunks with metadata.
-    """
-    collection = get_collection()
-    if collection.count() == 0:
+    question = (question or "").strip()
+    if not question or n_results <= 0:
         return []
- 
-    # (1) ChromaDB vector search - fetch more candidates for re-ranking
-    fetch_count = min(n_results * 3, collection.count())
+
+    collection = get_collection()
+    collection_size = collection.count()
+    if collection_size == 0:
+        return []
+
+    fetch_count = min(max(n_results * 4, n_results), collection_size)
+
     try:
         results = collection.query(
             query_texts=[question],
             n_results=fetch_count,
             include=["documents", "metadatas", "distances"],
         )
-    except Exception as e:
-        logger.error("ChromaDB query failed: %s", str(e))
+    except Exception as exc:
+        logger.exception("ChromaDB query failed: %s", exc)
         return []
- 
-    documents = results.get("documents", [[]])[0]
-    metadatas = results.get("metadatas", [[]])[0]
-    distances = results.get("distances", [[]])[0]
-    ids = results.get("ids", [[]])[0]
- 
-    # Build a map of vector results
+
+    documents = (results.get("documents") or [[]])[0]
+    metadatas = (results.get("metadatas") or [[]])[0]
+    distances = (results.get("distances") or [[]])[0]
+    ids = (results.get("ids") or [[]])[0]
+
     vector_results: Dict[str, Dict] = {}
-    for doc, meta, dist, doc_id in zip(documents, metadatas, distances, ids):
+    for document, metadata, distance, doc_id in zip(
+        documents,
+        metadatas,
+        distances,
+        ids,
+    ):
+        if not document:
+            continue
         vector_results[doc_id] = {
-            "text": doc,
-            "metadata": meta,
-            "distance": dist,
+            "text": document,
+            "metadata": metadata or {},
+            "distance": float(distance),
             "doc_id": doc_id,
         }
- 
-    # (2) BM25 keyword search
+
     bm25 = get_bm25_index()
     bm25_scores: Dict[str, float] = {}
-    if bm25.doc_count > 0:
-        bm25_results = bm25.search(question, top_k=n_results * 3)
-        for idx, score in bm25_results:
-            if idx < len(bm25.doc_ids):
-                bm25_scores[bm25.doc_ids[idx]] = score
- 
-    # (3) Merge: combine vector results with any BM25-only results
-    # Start with vector results (which have distance info)
+
+    for index, score in bm25.search(question, top_k=fetch_count):
+        if 0 <= index < len(bm25.doc_ids) and score > 0:
+            bm25_scores[bm25.doc_ids[index]] = score
+
     merged: Dict[str, Dict] = dict(vector_results)
- 
-    # Add BM25 results that are not in vector results
-    for doc_id, score in bm25_scores.items():
-        if doc_id not in merged:
-            # Fetch from collection by ID
-            try:
-                fetched = collection.get(
-                    ids=[doc_id],
-                    include=["documents", "metadatas"],
-                )
-                if fetched["documents"]:
+
+    bm25_only_ids = [
+        doc_id
+        for doc_id in bm25_scores
+        if doc_id not in merged
+    ]
+
+    if bm25_only_ids:
+        try:
+            fetched = collection.get(
+                ids=bm25_only_ids,
+                include=["documents", "metadatas"],
+            )
+            fetched_ids = fetched.get("ids") or []
+            fetched_documents = fetched.get("documents") or []
+            fetched_metadatas = fetched.get("metadatas") or []
+
+            for doc_id, document, metadata in zip(
+                fetched_ids,
+                fetched_documents,
+                fetched_metadatas,
+            ):
+                if document:
                     merged[doc_id] = {
-                        "text": fetched["documents"][0],
-                        "metadata": fetched["metadatas"][0] if fetched["metadatas"] else {},
-                        "distance": 1.0,  # Default distance for BM25-only results
+                        "text": document,
+                        "metadata": metadata or {},
+                        # Neutral semantic score for a lexical-only candidate.
+                        "distance": 1.0,
                         "doc_id": doc_id,
                     }
-            except Exception:
-                pass
- 
-    # (4) Re-rank all candidates
-    all_candidates = list(merged.values())
- 
-    # Filter by relevance threshold
-    RELEVANCE_THRESHOLD = 1.5
-    filtered = [
-        item for item in all_candidates
-        if item["distance"] <= RELEVANCE_THRESHOLD
-        or bm25_scores.get(item["doc_id"], 0) > 0
-    ]
- 
-    if not filtered:
-        filtered = all_candidates
- 
-    reranked = _rerank_results(filtered, question, bm25_scores)
+        except Exception as exc:
+            logger.warning("Could not fetch BM25-only candidates: %s", exc)
+
+    reranked = _rerank_results(
+        list(merged.values()),
+        question,
+        bm25_scores,
+    )
     return reranked[:n_results]
- 
- 
-def delete_document(doc_id: str):
-    """Delete a document from the vector store."""
+
+
+def delete_document(doc_id: str) -> None:
+    if not doc_id:
+        return
+
     collection = get_collection()
     collection.delete(ids=[doc_id])
- 
- 
-def chunk_text(text: str, chunk_size: int = 800, overlap: int = 150) -> List[str]:
-    """Legacy: Split text into overlapping chunks using sentence-based splitting.
- 
-    Kept for backward compatibility with manual document uploads.
-    """
-    sentences = re.split(r'(?<=[.!?])\s+', text)
-    chunks = []
-    current_chunk = ""
- 
-    for sentence in sentences:
-        if current_chunk and len(current_chunk) + len(sentence) + 1 > chunk_size:
-            if current_chunk.strip():
-                chunks.append(current_chunk.strip())
-            if len(current_chunk) > overlap:
-                overlap_text = current_chunk[-overlap:]
-                space_idx = overlap_text.find(" ")
-                if space_idx != -1:
-                    overlap_text = overlap_text[space_idx + 1:]
-                current_chunk = overlap_text + " " + sentence
-            else:
-                current_chunk = sentence
-        else:
-            if current_chunk:
-                current_chunk += " " + sentence
-            else:
-                current_chunk = sentence
- 
-    if current_chunk.strip():
-        chunks.append(current_chunk.strip())
- 
-    return chunks
- 
- 
-def process_pdf(file_path: str) -> List[str]:
-    """Extract text from PDF and add chunks to vector store using heading-aware chunking."""
+    get_bm25_index().delete_documents([doc_id])
+
+
+def chunk_text(
+    text: str,
+    chunk_size: int = 800,
+    overlap: int = 150,
+) -> List[str]:
+    if chunk_size <= 0:
+        raise ValueError("chunk_size must be positive")
+    if overlap < 0 or overlap >= chunk_size:
+        raise ValueError("overlap must satisfy 0 <= overlap < chunk_size")
+
+    return _hard_split_text(text, chunk_size, overlap)
+
+
+def _make_document_id(file_path: str) -> str:
+    stem = re.sub(r"[^a-zA-Z0-9_-]+", "_", Path(file_path).stem).strip("_")
+    stem = stem or "document"
+    path_hash = hashlib.sha1(
+        str(Path(file_path).resolve()).encode("utf-8")
+    ).hexdigest()[:10]
+    return f"{stem.lower()}_{path_hash}"
+
+
+def process_pdf(
+    file_path: str,
+    document_id: Optional[str] = None,
+) -> List[str]:
     reader = PdfReader(file_path)
-    full_text = ""
-    for page in reader.pages:
-        page_text = page.extract_text()
-        if page_text:
-            full_text += page_text + "\n"
- 
-    if not full_text.strip():
+    page_texts = [
+        page.extract_text() or ""
+        for page in reader.pages
+    ]
+    full_text = "\n".join(page_texts).strip()
+
+    if not full_text:
+        logger.warning("No extractable text found in PDF: %s", file_path)
         return []
- 
-    # Use heading-aware chunking for structured PDFs
-    chunks = chunk_pdf_by_headings(full_text)
- 
-    if not chunks or len(chunks) < 3:
-        # Fallback to legacy chunking if heading parsing fails
+
+    parsed_chunks = chunk_pdf_by_headings(full_text)
+    has_real_headings = any(
+        chunk.get("heading") != "General"
+        for chunk in parsed_chunks
+    )
+
+    if not has_real_headings:
         text_chunks = chunk_text(full_text)
-        doc_ids = []
-        filename = os.path.basename(file_path)
-        for i, chunk in enumerate(text_chunks):
-            doc_id = add_document(
-                text=chunk,
-                metadata={"source": filename, "chunk_index": i},
-                doc_id=f"{filename}_{i}",
-            )
-            doc_ids.append(doc_id)
-        return doc_ids
- 
-    # Add all chunks with rich metadata
-    texts = []
-    metadatas = []
-    doc_ids = []
-    document_id = "muhammad_junayed_complete_rag_profile"
- 
-    for i, chunk in enumerate(chunks):
-        texts.append(chunk["text"])
-        meta = {
-            "section": chunk["heading"],
-            "section_number": chunk["section_number"],
-            "document_id": document_id,
-            "entity_type": chunk["entity_type"],
-            "chunk_index": i,
-            "source": os.path.basename(file_path),
+        parsed_chunks = [
+            {
+                "text": chunk,
+                "heading": "General",
+                "section_number": "1",
+                "subsection": None,
+                "entity_type": "profile",
+            }
+            for chunk in text_chunks
+        ]
+
+    final_document_id = document_id or _make_document_id(file_path)
+    source_name = os.path.basename(file_path)
+    collection = get_collection()
+
+    # Remove stale chunks from an earlier version of this same document.
+    try:
+        previous = collection.get(
+            where={"document_id": final_document_id},
+            include=[],
+        )
+        previous_ids = previous.get("ids") or []
+        if previous_ids:
+            collection.delete(ids=previous_ids)
+            get_bm25_index().delete_documents(previous_ids)
+    except Exception as exc:
+        logger.warning(
+            "Could not remove previous chunks for %s: %s",
+            final_document_id,
+            exc,
+        )
+
+    texts: List[str] = []
+    metadatas: List[Dict] = []
+    doc_ids: List[str] = []
+
+    for index, chunk in enumerate(parsed_chunks):
+        chunk_text_value = (chunk.get("text") or "").strip()
+        if not chunk_text_value:
+            continue
+
+        texts.append(chunk_text_value)
+        metadata = {
+            "section": chunk.get("heading", "General"),
+            "section_number": chunk.get("section_number", "1"),
+            "document_id": final_document_id,
+            "entity_type": chunk.get("entity_type", "profile"),
+            "chunk_index": index,
+            "source": source_name,
         }
         if chunk.get("subsection"):
-            meta["subsection"] = chunk["subsection"]
-        metadatas.append(meta)
-        doc_ids.append(f"{document_id}_chunk_{i}")
- 
-    add_documents_batch(texts, metadatas, doc_ids)
+            metadata["subsection"] = chunk["subsection"]
+
+        metadatas.append(metadata)
+        doc_ids.append(f"{final_document_id}_chunk_{index}")
+
+    added_ids = add_documents_batch(texts, metadatas, doc_ids)
+
     gc.collect()
     logger.info(
-        "Processed PDF '%s': created %d chunks with heading-aware chunking",
-        os.path.basename(file_path),
-        len(texts),
+        "Processed PDF '%s': created %d chunks",
+        source_name,
+        len(added_ids),
     )
-    return doc_ids
+    return added_ids
