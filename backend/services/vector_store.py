@@ -449,11 +449,19 @@ def _parse_sections(text: str) -> List[Dict[str, Any]]:
                     "Models", "Responsibilities",
                 }
             )
+            next_is_metadata_or_bullet = bool(
+                next_line.startswith(("•", "◦", "▪", "-", "*"))
+                or re.match(
+                    r"^[A-Za-z][^:\n]{0,55}\s*:\s*.+$",
+                    next_line,
+                )
+            )
             if (
                 len(heading_title) >= 55
                 and next_line
                 and len(next_line) <= 100
                 and not heading_pattern.match(next_line)
+                and not next_is_metadata_or_bullet
                 and following_is_body
             ):
                 heading_title = f"{heading_title} {next_line}"
