@@ -186,18 +186,11 @@ def get_chroma_client() -> Any:
 
 
 def _create_or_get_collection(client: Any) -> Any:
-    """Use the current Chroma configuration API, with a legacy fallback."""
-    try:
-        return client.get_or_create_collection(
-            name=COLLECTION_NAME,
-            configuration={"hnsw": {"space": "cosine"}},
-        )
-    except TypeError:
-        # Compatibility with older Chroma releases.
-        return client.get_or_create_collection(
-            name=COLLECTION_NAME,
-            metadata={"hnsw:space": "cosine"},
-        )
+    """Create or load the Chroma collection using a compatible configuration."""
+    return client.get_or_create_collection(
+        name=COLLECTION_NAME,
+        metadata={"hnsw:space": "cosine"},
+    )
 
 
 def rebuild_bm25_from_collection(batch_size: int = 200) -> None:
