@@ -1,5 +1,6 @@
 import logging
 import os
+from typing import Optional
 
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
@@ -13,11 +14,22 @@ from services.vector_store import (
 
 logger = logging.getLogger(__name__)
 
-# Path to the canonical RAG knowledge base PDF (relative to backend directory)
-CANONICAL_PDF_PATH = os.path.join(
-    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-    "Muhammad_Junayed_RAG_Knowledge_Base.pdf",
-)
+# Path to the canonical RAG knowledge base PDF
+# Try multiple locations to handle different deployment structures
+_BACKEND_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+CANONICAL_PDF_PATHS = [
+    os.path.join(_BACKEND_DIR, "Muhammad_Junayed_RAG_Knowledge_Base.pdf"),
+    os.path.join(os.getcwd(), "Muhammad_Junayed_RAG_Knowledge_Base.pdf"),
+    os.path.join(_BACKEND_DIR, "..", "Muhammad_Junayed_RAG_Knowledge_Base.pdf"),
+]
+
+
+def _find_canonical_pdf() -> Optional[str]:
+    """Find the canonical PDF in multiple possible locations."""
+    for path in CANONICAL_PDF_PATHS:
+        if os.path.exists(path):
+            return path
+    return None
 
 
 async def seed_database():
@@ -224,26 +236,26 @@ def seed_vector_store():
         )
         return
 
-    # Check if canonical PDF exists
-    if not os.path.exists(CANONICAL_PDF_PATH):
+    # Find canonical PDF
+    pdf_path = _find_canonical_pdf()
+    if not pdf_path:
         logger.warning(
-            "Canonical PDF not found at '%s'. Falling back to basic profile seeding.",
-            CANONICAL_PDF_PATH,
+            "Canonical PDF not found in any expected location: %s. Falling back to basic profile seeding.",
+            CANONICAL_PDF_PATHS,
         )
         _seed_basic_profile()
         return
 
     # Ingest the canonical PDF with heading-aware chunking
-    logger.info("Ingesting canonical PDF: %s", CANONICAL_PDF_PATH)
+    logger.info("Ingesting canonical PDF: %s", pdf_path)
     try:
-        doc_ids = process_pdf(CANONICAL_PDF_PATH)
+        doc_ids = process_pdf(pdf_path)
         logger.info(
             "Successfully ingested canonical PDF: %d chunks created.",
             len(doc_ids),
         )
     except Exception as e:
         logger.error("Failed to ingest canonical PDF: %s", str(e))
-        # Fallback to basic profile seeding
         _seed_basic_profile()
 
 
