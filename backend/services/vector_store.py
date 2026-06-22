@@ -1,3 +1,4 @@
+import gc
 import logging
 import math
 import re
@@ -57,7 +58,6 @@ class SimpleBM25:
 
     def __init__(self):
         self.docs: List[List[str]] = []
-        self.doc_texts: List[str] = []
         self.doc_ids: List[str] = []
         self.avg_dl: float = 0
         self.doc_count: int = 0
@@ -68,7 +68,6 @@ class SimpleBM25:
         for i, doc in enumerate(documents):
             tokens = self._tokenize(doc)
             self.docs.append(tokens)
-            self.doc_texts.append(doc)
             if doc_ids:
                 self.doc_ids.append(doc_ids[i])
             else:
@@ -116,7 +115,6 @@ class SimpleBM25:
     def clear(self):
         """Clear all documents from the index."""
         self.docs = []
-        self.doc_texts = []
         self.doc_ids = []
         self.avg_dl = 0
         self.doc_count = 0
@@ -272,13 +270,13 @@ def _parse_sections(text: str) -> List[Dict]:
 
 def _split_section_into_chunks(
     section: Dict,
-    max_chars: int = 2000,
+    max_chars: int = 2500,
     overlap_chars: int = 240,
 ) -> List[Dict]:
     """Split a section into chunks if it exceeds max_chars.
 
     Splits at paragraph boundaries within the section.
-    Target: 400-550 tokens (~1600-2200 chars).
+    Target: 500-700 tokens (~2000-2800 chars).
     Overlap: 60 tokens (~240 chars).
     """
     text = section["text"]
@@ -379,26 +377,22 @@ def add_documents_batch(
     metadatas: List[Dict],
     doc_ids: List[str],
 ) -> List[str]:
-    """Add multiple documents to both ChromaDB and BM25 index in batch."""
+    """Add multiple documents to both ChromaDB and BM25 index one at a time to keep memory low."""
     collection = get_collection()
+    bm25 = get_bm25_index()
 
-    # Add keywords to metadata
-    for i, meta in enumerate(metadatas):
+    for i in range(len(texts)):
+        meta = metadatas[i]
         if "keywords" not in meta:
             meta["keywords"] = extract_keywords(texts[i])
-
-    # ChromaDB has batch size limits, chunk into batches of 40
-    batch_size = 40
-    for start in range(0, len(texts), batch_size):
-        end = min(start + batch_size, len(texts))
+        # Add one at a time to keep memory low
         collection.add(
-            documents=texts[start:end],
-            metadatas=metadatas[start:end],
-            ids=doc_ids[start:end],
+            documents=[texts[i]],
+            metadatas=[meta],
+            ids=[doc_ids[i]],
         )
 
-    # Add all to BM25 index
-    bm25 = get_bm25_index()
+    # Add all to BM25 (lightweight - just stores tokenized words)
     bm25.add_documents(texts, doc_ids)
 
     return doc_ids
@@ -647,6 +641,7 @@ def process_pdf(file_path: str) -> List[str]:
         doc_ids.append(f"{document_id}_chunk_{i}")
 
     add_documents_batch(texts, metadatas, doc_ids)
+    gc.collect()
     logger.info(
         "Processed PDF '%s': created %d chunks with heading-aware chunking",
         os.path.basename(file_path),
