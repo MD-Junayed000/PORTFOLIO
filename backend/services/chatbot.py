@@ -1,3 +1,4 @@
+import asyncio
 import logging
 import re
 
@@ -130,33 +131,157 @@ def _build_prompt(user_message: str, context: str) -> str:
     return f"<s>[INST] {system}\n\nUser question: {user_message} [/INST]"
 
 
+def _clean_response(text: str) -> str:
+    """Post-process LLM response to remove artifacts and ensure quality."""
+    if not text:
+        return "I apologize, but I could not generate a proper response. Please try asking your question in a different way."
+
+    # Remove instruction artifacts
+    artifacts = ["[INST]", "[/INST]", "</s>", "<s>", "<<SYS>>", "<</SYS>>", "<|", "|>"]
+    for artifact in artifacts:
+        text = text.replace(artifact, "")
+
+    # Remove cases where the model echoes back the system prompt
+    # Look for the system prompt signature and remove everything before the actual answer
+    system_prompt_markers = [
+        "You are a friendly, conversational AI assistant",
+        "Context from knowledge base:",
+        "User question:",
+        "Guidelines:",
+    ]
+    for marker in system_prompt_markers:
+        if marker in text:
+            # Find the last occurrence and take everything after it
+            idx = text.rfind(marker)
+            # Find the end of this echoed section (next newline after some content)
+            remaining = text[idx:]
+            newline_idx = remaining.find("\n\n")
+            if newline_idx > 0:
+                text = remaining[newline_idx:].strip()
+            else:
+                text = ""
+
+    # Collapse multiple newlines into max 2
+    text = re.sub(r'\n{3,}', '\n\n', text)
+
+    # Strip leading/trailing whitespace
+    text = text.strip()
+
+    # Remove repeated sentences (keep only first occurrence)
+    sentences = re.split(r'(?<=[.!?])\s+', text)
+    seen = set()
+    unique_sentences = []
+    for sentence in sentences:
+        normalized = sentence.strip().lower()
+        if normalized and normalized not in seen:
+            seen.add(normalized)
+            unique_sentences.append(sentence.strip())
+    text = " ".join(unique_sentences)
+
+    # Truncate to max 1000 characters at a sentence boundary
+    if len(text) > 1000:
+        truncated = text[:1000]
+        # Find the last sentence boundary
+        last_boundary = max(
+            truncated.rfind(". "),
+            truncated.rfind("! "),
+            truncated.rfind("? "),
+            truncated.rfind(".\n"),
+        )
+        if last_boundary > 200:
+            text = truncated[:last_boundary + 1]
+        else:
+            # Try to cut at a period at the end
+            last_period = truncated.rfind(".")
+            if last_period > 200:
+                text = truncated[:last_period + 1]
+            else:
+                text = truncated.strip()
+
+    # If response is empty after cleaning, return graceful fallback
+    if not text.strip():
+        return "I apologize, but I could not generate a proper response. Please try asking your question in a different way."
+
+    return text.strip()
+
+
 async def _call_hf_api(prompt: str) -> str:
     url = f"https://api-inference.huggingface.co/models/{settings.HF_MODEL_ID}"
     headers = {"Authorization": f"Bearer {settings.HF_API_TOKEN}"}
     payload = {
         "inputs": prompt,
         "parameters": {
-            "max_new_tokens": 800,
+            "max_new_tokens": 500,
             "temperature": 0.4,
             "return_full_text": False,
         },
     }
 
-    async with httpx.AsyncClient(timeout=60.0) as client:
+    async with httpx.AsyncClient(timeout=45.0) as client:
         response = await client.post(url, json=payload, headers=headers)
-        if response.status_code != 200:
-            error_detail = response.text[:300]
-            logger.error(
-                "HF API returned status %d: %s (model: %s)",
-                response.status_code,
-                error_detail,
-                settings.HF_MODEL_ID,
+
+        # Handle rate limiting
+        if response.status_code == 429:
+            raise Exception(
+                "Rate limited by HuggingFace API. Please wait a moment and try again."
             )
-            response.raise_for_status()
+
+        # Handle model loading (503) with retry
+        if response.status_code == 503:
+            logger.warning("Model is loading (503), retrying in 5 seconds...")
+            await asyncio.sleep(5)
+            response = await client.post(url, json=payload, headers=headers)
+            if response.status_code != 200:
+                error_detail = response.text[:300]
+                logger.error(
+                    "HF API retry failed with status %d: %s (model: %s)",
+                    response.status_code,
+                    error_detail,
+                    settings.HF_MODEL_ID,
+                )
+                response.raise_for_status()
+        elif response.status_code != 200:
+            # Check if JSON error mentions "loading"
+            try:
+                error_json = response.json()
+                error_msg = str(error_json.get("error", ""))
+                if "loading" in error_msg.lower():
+                    logger.warning("Model is loading (from error message), retrying in 5 seconds...")
+                    await asyncio.sleep(5)
+                    response = await client.post(url, json=payload, headers=headers)
+                    if response.status_code != 200:
+                        error_detail = response.text[:300]
+                        logger.error(
+                            "HF API retry failed with status %d: %s (model: %s)",
+                            response.status_code,
+                            error_detail,
+                            settings.HF_MODEL_ID,
+                        )
+                        response.raise_for_status()
+                else:
+                    error_detail = response.text[:300]
+                    logger.error(
+                        "HF API returned status %d: %s (model: %s)",
+                        response.status_code,
+                        error_detail,
+                        settings.HF_MODEL_ID,
+                    )
+                    response.raise_for_status()
+            except (ValueError, KeyError):
+                error_detail = response.text[:300]
+                logger.error(
+                    "HF API returned status %d: %s (model: %s)",
+                    response.status_code,
+                    error_detail,
+                    settings.HF_MODEL_ID,
+                )
+                response.raise_for_status()
+
         result = response.json()
 
     if isinstance(result, list) and len(result) > 0:
-        return result[0].get("generated_text", "").strip()
+        generated = result[0].get("generated_text", "").strip()
+        return _clean_response(generated)
     logger.warning("HF API returned unexpected response format: %s", str(result)[:200])
     return "I apologize, but I could not generate a response at this time."
 
