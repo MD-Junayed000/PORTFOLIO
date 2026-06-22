@@ -2,7 +2,7 @@
   "id": "FEAT-002",
   "type": "fix",
   "description": "Address review issues: tighten over-broad context cleaner regex, limit bullet-stripping in _clean_response to metadata-like lines, add test for colon-containing narrative surviving cleaner, and add timeout budget comment to retry logic.",
-  "status": "in_progress",
+  "status": "completed",
   "steps": [
     "1. Fix _clean_context_for_llm() regex to not strip narrative sentences with colons. Either enumerate known metadata labels (matching _clean_response approach) or require pre-colon segment to be short (<=3 words) and match metadata-like pattern.",
     "2. Fix _clean_response() bullet-stripping regex to only remove lines starting with dash/asterisk that also look like metadata (have colon pattern or are short label-like items).",
@@ -21,5 +21,5 @@
     "cd /projects/sandbox/PORTFOLIO/backend && TESTING=true SECRET_KEY=test-key python -m pytest tests/ -v"
   ],
   "blocked_reason": null,
-  "findings": null
+  "findings": "All 55 tests pass (17 existing API tests + 38 chatbot unit tests). The context cleaner now uses an enumerated metadata labels pattern (matching the approach already used in _clean_response) plus a short-label fallback that skips lines starting with narrative starters (His, The, A, etc.). The bullet-stripping in _clean_response was split into two patterns: one for colon-containing metadata lines and one for short non-sentence items. The retry timeout is now 20s instead of 45s."
 }
