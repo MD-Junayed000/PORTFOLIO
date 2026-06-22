@@ -135,17 +135,103 @@ def _extract_email(text: str) -> Optional[str]:
 
 def _generate_fallback_response(user_message: str, context: str) -> str:
     """Generate a structured, intelligent response from retrieved context when HF API is not available."""
-    message_lower = user_message.lower()
+    message_lower = user_message.lower().strip()
 
-    # Handle greetings first
-    if any(word in message_lower for word in ["hello", "hi", "hey", "greetings"]):
+    # Handle greetings ONLY when the entire message is a greeting (not part of a longer question)
+    greeting_words = {"hello", "hi", "hey", "greetings", "howdy", "hola", "yo"}
+    # Strip punctuation for comparison
+    stripped_message = re.sub(r'[^\w\s]', '', message_lower).strip()
+    if stripped_message in greeting_words:
         return (
             "Hello! I'm Muhammad Junayed's AI assistant. "
             "I can tell you about his projects, skills, research, and experience. "
             "What would you like to know?"
         )
 
-    # If no meaningful context, return generic response
+    # If no meaningful context, check keyword-based answers first before giving generic response
+    # Handle common keyword-based questions regardless of vector store results
+
+    # LinkedIn requests
+    if "linkedin" in message_lower:
+        urls = _extract_urls(context) if context and context != "No specific context available." else {}
+        if "linkedin" in urls:
+            return f"Here is Muhammad Junayed's LinkedIn profile: {urls['linkedin']}"
+        return (
+            "Muhammad Junayed's LinkedIn profile is: "
+            "https://www.linkedin.com/in/muhammad-junayed-ete20/"
+        )
+
+    # GitHub requests
+    if "github" in message_lower:
+        urls = _extract_urls(context) if context and context != "No specific context available." else {}
+        if "github" in urls:
+            return f"Here is Muhammad Junayed's GitHub profile: {urls['github']}"
+        return (
+            "Muhammad Junayed's GitHub profile is: "
+            "https://github.com/MD-Junayed000"
+        )
+
+    # Kaggle requests
+    if "kaggle" in message_lower:
+        urls = _extract_urls(context) if context and context != "No specific context available." else {}
+        if "kaggle" in urls:
+            return f"Here is Muhammad Junayed's Kaggle profile: {urls['kaggle']}"
+        return (
+            "Muhammad Junayed's Kaggle profile is: "
+            "https://www.kaggle.com/muhammedjunayed"
+        )
+
+    # Google Scholar requests
+    if "scholar" in message_lower or "google scholar" in message_lower:
+        urls = _extract_urls(context) if context and context != "No specific context available." else {}
+        if "scholar" in urls:
+            return f"Here is Muhammad Junayed's Google Scholar profile: {urls['scholar']}"
+        return (
+            "Muhammad Junayed's Google Scholar profile is: "
+            "https://scholar.google.com/citations?user=wObQzNsAAAAJ&hl=en"
+        )
+
+    # Address/location requests
+    if any(word in message_lower for word in ["address", "location", "where", "live", "based"]):
+        # Check context for address info
+        if context and context != "No specific context available.":
+            address_match = re.search(r'address[:\s-]+([^\n,]+)', context, re.IGNORECASE)
+            if address_match:
+                return f"Muhammad Junayed's address is: {address_match.group(1).strip()}"
+        return (
+            "Muhammad Junayed is based in Bangladesh. He is a final-year ETE student at "
+            "Chittagong University of Engineering & Technology (CUET)."
+        )
+
+    # Phone requests
+    if any(word in message_lower for word in ["phone", "call", "number", "mobile"]):
+        if context and context != "No specific context available.":
+            phone_match = re.search(r'(?:phone|mobile|contact)[:\s-]+([+\d\s()-]+)', context, re.IGNORECASE)
+            if phone_match:
+                return f"Muhammad Junayed's phone number is: {phone_match.group(1).strip()}"
+        return (
+            "For contact information, please use the contact form on this website or "
+            "reach out via email at mdjunayed573@gmail.com"
+        )
+
+    # Email/contact requests
+    if any(word in message_lower for word in ["email", "mail", "contact info", "reach"]):
+        found_email = _extract_email(context) if context else None
+        found_email = found_email or "mdjunayed573@gmail.com"
+        response = f"You can reach Muhammad Junayed via email at: {found_email}"
+        if context and context != "No specific context available.":
+            urls = _extract_urls(context)
+            if urls:
+                social_parts = []
+                if "linkedin" in urls:
+                    social_parts.append(f"LinkedIn: {urls['linkedin']}")
+                if "github" in urls:
+                    social_parts.append(f"GitHub: {urls['github']}")
+                if social_parts:
+                    response += "\n\nHe is also available on:\n" + "\n".join(f"- {s}" for s in social_parts)
+        return response
+
+    # If no meaningful context available after keyword checks, return generic response
     if not context or context == "No specific context available.":
         return (
             "I'm Muhammad Junayed's AI portfolio assistant. "
@@ -156,58 +242,6 @@ def _generate_fallback_response(user_message: str, context: str) -> str:
     # Extract structured information from context
     urls = _extract_urls(context)
     email = _extract_email(context)
-
-    # Handle specific information requests by checking keywords in the question
-
-    # LinkedIn requests
-    if "linkedin" in message_lower:
-        if "linkedin" in urls:
-            return f"Here is Muhammad Junayed's LinkedIn profile: {urls['linkedin']}"
-        return (
-            "Muhammad Junayed's LinkedIn profile is: "
-            "https://www.linkedin.com/in/muhammad-junayed-ete20/"
-        )
-
-    # GitHub requests
-    if "github" in message_lower:
-        if "github" in urls:
-            return f"Here is Muhammad Junayed's GitHub profile: {urls['github']}"
-        return (
-            "Muhammad Junayed's GitHub profile is: "
-            "https://github.com/MD-Junayed000"
-        )
-
-    # Kaggle requests
-    if "kaggle" in message_lower:
-        if "kaggle" in urls:
-            return f"Here is Muhammad Junayed's Kaggle profile: {urls['kaggle']}"
-        return (
-            "Muhammad Junayed's Kaggle profile is: "
-            "https://www.kaggle.com/muhammedjunayed"
-        )
-
-    # Google Scholar requests
-    if "scholar" in message_lower or "google scholar" in message_lower:
-        if "scholar" in urls:
-            return f"Here is Muhammad Junayed's Google Scholar profile: {urls['scholar']}"
-        return (
-            "Muhammad Junayed's Google Scholar profile is: "
-            "https://scholar.google.com/citations?user=wObQzNsAAAAJ&hl=en"
-        )
-
-    # Email/contact requests
-    if any(word in message_lower for word in ["email", "mail", "contact info", "reach"]):
-        found_email = email or "mdjunayed573@gmail.com"
-        response = f"You can reach Muhammad Junayed via email at: {found_email}"
-        if urls:
-            social_parts = []
-            if "linkedin" in urls:
-                social_parts.append(f"LinkedIn: {urls['linkedin']}")
-            if "github" in urls:
-                social_parts.append(f"GitHub: {urls['github']}")
-            if social_parts:
-                response += "\n\nHe is also available on:\n" + "\n".join(f"- {s}" for s in social_parts)
-        return response
 
     # For general questions, parse context into a structured answer
     return _build_structured_answer(message_lower, context)

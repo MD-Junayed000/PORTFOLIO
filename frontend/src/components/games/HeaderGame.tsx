@@ -40,7 +40,7 @@ const GAME_SPEED = 3;
 export default function HeaderGame() {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const animRef = useRef<number>(0);
-  const playerRef = useRef<Entity>({ x: 40, y: 0, vy: 0, width: 22, height: 22 });
+  const playerRef = useRef<Entity>({ x: 40, y: 0, vy: 0, width: 30, height: 30 });
   const obstaclesRef = useRef<Obstacle[]>([]);
   const frameRef = useRef(0);
   const scoreRef = useRef(0);
@@ -52,7 +52,7 @@ export default function HeaderGame() {
     const canvas = canvasRef.current;
     if (!canvas) return;
     const ground = canvas.height - GROUND_OFFSET;
-    playerRef.current = { x: 40, y: ground - 22, vy: 0, width: 22, height: 22 };
+    playerRef.current = { x: 40, y: ground - 30, vy: 0, width: 30, height: 30 };
     obstaclesRef.current = [];
     frameRef.current = 0;
     scoreRef.current = 0;
@@ -113,41 +113,55 @@ export default function HeaderGame() {
       const parent = canvas.parentElement;
       if (parent) {
         canvas.width = parent.clientWidth;
-        canvas.height = 80;
+        canvas.height = 120;
       }
     };
     resizeCanvas();
     window.addEventListener("resize", resizeCanvas);
 
     const ground = canvas.height - GROUND_OFFSET;
-    playerRef.current.y = ground - 22;
+    playerRef.current.y = ground - 30;
 
     const drawPlayer = (ctx: CanvasRenderingContext2D, x: number, y: number, width: number, height: number) => {
-      // Claude-inspired player: rounded coral/orange shape
+      // Claude logo-inspired player: recognizable orange circle/face with subtle smile
       const cx = x + width / 2;
       const cy = y + height / 2;
       const radius = width / 2;
 
-      // Main body - rounded coral shape
+      // Outer circle - warm orange/coral
       ctx.beginPath();
-      ctx.ellipse(cx, cy, radius, radius * 0.9, 0, 0, Math.PI * 2);
+      ctx.arc(cx, cy, radius, 0, Math.PI * 2);
       ctx.fillStyle = "#E8733A";
       ctx.fill();
 
-      // Inner highlight
+      // Inner lighter circle for depth
       ctx.beginPath();
-      ctx.ellipse(cx - 2, cy - 2, radius * 0.6, radius * 0.5, -0.3, 0, Math.PI * 2);
-      ctx.fillStyle = "#F4A261";
+      ctx.arc(cx, cy, radius * 0.82, 0, Math.PI * 2);
+      ctx.fillStyle = "#F29B68";
       ctx.fill();
 
-      // Small dot eyes
-      ctx.fillStyle = "#FFFFFF";
+      // Core warm highlight
       ctx.beginPath();
-      ctx.arc(cx - 3, cy - 2, 2, 0, Math.PI * 2);
+      ctx.arc(cx, cy - radius * 0.1, radius * 0.55, 0, Math.PI * 2);
+      ctx.fillStyle = "#F4B887";
+      ctx.fill();
+
+      // Eyes - two small dark dots
+      ctx.fillStyle = "#5C3317";
+      ctx.beginPath();
+      ctx.arc(cx - radius * 0.25, cy - radius * 0.15, radius * 0.09, 0, Math.PI * 2);
       ctx.fill();
       ctx.beginPath();
-      ctx.arc(cx + 3, cy - 2, 2, 0, Math.PI * 2);
+      ctx.arc(cx + radius * 0.25, cy - radius * 0.15, radius * 0.09, 0, Math.PI * 2);
       ctx.fill();
+
+      // Subtle smile - a gentle arc
+      ctx.beginPath();
+      ctx.arc(cx, cy + radius * 0.05, radius * 0.3, 0.15 * Math.PI, 0.85 * Math.PI, false);
+      ctx.strokeStyle = "#5C3317";
+      ctx.lineWidth = 1.5;
+      ctx.lineCap = "round";
+      ctx.stroke();
     };
 
     const drawEnemy = (ctx: CanvasRenderingContext2D, obs: Obstacle) => {
@@ -280,7 +294,7 @@ export default function HeaderGame() {
 
   return (
     <div
-      className="w-full h-20 relative cursor-pointer select-none outline-none"
+      className="w-full h-[120px] relative cursor-pointer select-none outline-none"
       onClick={jump}
       tabIndex={0}
       role="button"
