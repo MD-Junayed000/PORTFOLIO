@@ -5,12 +5,16 @@ import { motion } from "framer-motion";
 import { ExternalLink, ChevronDown } from "lucide-react";
 import { GithubIcon } from "@/components/icons";
 import Image from "next/image";
-import api from "@/lib/api";
+import api, { API_BASE_URL } from "@/lib/api";
 import type { Project } from "@/types";
 
 const DEFAULT_DISPLAY_COUNT = 6;
 
 function getImageUrl(url: string): string {
+  // Backend-hosted uploads need the API base URL
+  if (url.startsWith("/uploads/")) {
+    return `${API_BASE_URL}${url}`;
+  }
   // Convert GitHub blob URLs to raw.githubusercontent.com URLs
   const blobMatch = url.match(
     /^https?:\/\/github\.com\/([^/]+)\/([^/]+)\/blob\/(.+)$/

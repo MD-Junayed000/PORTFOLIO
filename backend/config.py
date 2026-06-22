@@ -22,7 +22,7 @@ class Settings(BaseSettings):
     ADMIN_PASSWORD_HASH: str = _DEFAULT_ADMIN_HASH
 
     HF_API_TOKEN: str = ""
-    HF_MODEL_ID: str = "meta-llama/Meta-Llama-3-8B-Instruct"
+    HF_MODEL_ID: str = "mistralai/Mistral-7B-Instruct-v0.3"
 
     CHROMA_PERSIST_DIR: str = "./chroma_data"
 

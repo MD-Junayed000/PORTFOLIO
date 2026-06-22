@@ -80,12 +80,12 @@ export default function Experience() {
                           )}
                         </div>
                         {item.logo_url && (
-                          <div className="flex-shrink-0 ml-4">
+                          <div className="flex-shrink-0 ml-4 flex items-center">
                             <Image
                               src={`${API_URL}${item.logo_url}`}
                               alt={`${item.organization} logo`}
-                              width={48}
-                              height={48}
+                              width={64}
+                              height={64}
                               className="rounded-lg object-contain"
                             />
                           </div>
