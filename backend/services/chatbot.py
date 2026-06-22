@@ -105,14 +105,17 @@ def _clean_context_for_llm(context: str) -> str:
     # that happen to contain a colon (e.g., "His focus: NLP and vision systems").
     metadata_labels_pattern = re.compile(
         r'^[\s•◦▪\-*]*(?:'
-        r'Document ID|Authors?|Conference|Publisher|DOI|Pages?|'
+        r'Document ID|Authors?|Conference|Publisher|DOI link|DOI|Pages?|'
         r'Code repository|Publication date|Conference abbreviation|'
         r'Conference location|Team|Venue|Workshop abbreviation|'
         r'Official paper link|Muhammad Junayed\'s author position|'
         r'Employment type|Duration|Organization|Role|'
         r'Source|Title|Volume|Issue|Journal|ISSN|ISBN|'
         r'Affiliation|Institution|Department|Year|Date|'
-        r'Keywords|Abstract|References|Citation'
+        r'Keywords|Abstract|References|Citation|'
+        r'Dataset|Common abbreviation|Common|Target classes|Target|'
+        r'Training type|Evaluation|Main|Shared|Exact|Individual|'
+        r'Comparison|Per-|Error'
         r')[^:\n]{0,40}:\s+.+',
         re.IGNORECASE
     )
@@ -123,16 +126,35 @@ def _clean_context_for_llm(context: str) -> str:
         r'^[\s•◦▪\-*]*([A-Z][A-Za-z]*(?:\s+[A-Za-z]+){0,2}):\s+.+'
     )
 
+    prev_was_metadata = False
+
     for line in lines:
         stripped = line.strip()
 
         # Skip empty lines (will re-add paragraph breaks later)
         if not stripped:
+            prev_was_metadata = False
             cleaned_lines.append("")
             continue
 
+        # Handle multi-line metadata values: if the previous line was stripped as
+        # metadata, also remove continuation lines (short lines without their own
+        # bullet, don't end with sentence-ending punctuation, and don't start a
+        # new sentence with a capital letter after whitespace).
+        if prev_was_metadata:
+            # A continuation line is typically short, has no bullet, and doesn't
+            # end with sentence-ending punctuation (., !, ?)
+            if (not re.match(r'^[•◦▪\-*]', stripped)
+                    and not stripped.endswith(('.', '!', '?'))
+                    and len(stripped.split()) <= 8):
+                # This looks like a continuation of the metadata value (e.g., "Systems")
+                continue
+            # If it does look like a new item, fall through to normal processing
+            prev_was_metadata = False
+
         # Skip lines matching known metadata labels (with or without bullet prefix)
         if metadata_labels_pattern.match(stripped):
+            prev_was_metadata = True
             continue
 
         # For lines matching a short label pattern (<=3 capitalized words before colon),
@@ -143,18 +165,29 @@ def _clean_context_for_llm(context: str) -> str:
         if short_match:
             pre_colon = short_match.group(1).strip()
             pre_colon_words = pre_colon.split()
-            # If it's a single capitalized word or a 2-3 word capitalized phrase
-            # AND doesn't start with common narrative starters, treat as metadata
+            # If it's a single capitalized word or a 2-word capitalized phrase
+            # AND doesn't start with common narrative starters, treat as metadata.
+            # Examples that should be stripped: "Dataset: BUSI", "Role: Intern",
+            # "Common abbreviation: BUSI", "Target classes: Normal, benign"
+            # Examples that should survive: "His focus: NLP", "The goal: detection"
             narrative_starters = {'his', 'her', 'the', 'a', 'an', 'my', 'our', 'their', 'its', 'this', 'that'}
             if (len(pre_colon_words) <= 2
-                    and pre_colon_words[0].lower() not in narrative_starters
-                    and not any(c.islower() for c in pre_colon_words[0][1:])):
-                # Looks like a metadata label (e.g., "Publisher: IEEE", "Role: Intern")
+                    and pre_colon_words[0].lower() not in narrative_starters):
+                # Looks like a metadata label (e.g., "Publisher: IEEE", "Dataset: BUSI")
                 # but NOT "His focus: NLP" or "The goal: detecting hallucinations"
+                prev_was_metadata = True
                 continue
 
         # Skip standalone section headers
         if stripped.lower().rstrip(":").strip() in standalone_headers:
+            prev_was_metadata = False
+            continue
+
+        # Catch-all: ANY line starting with a bullet char followed by word(s) and a colon
+        # is treated as metadata and stripped. Bullet-prefixed "Key: Value" patterns from
+        # the PDF are always structured metadata, never narrative prose.
+        if re.match(r'^[•◦▪]\s+[A-Za-z][^:]{0,60}:\s+', stripped):
+            prev_was_metadata = True
             continue
 
         # Skip lines that are just URLs (DOI links, code repo links, etc.)
@@ -191,12 +224,20 @@ def _clean_context_for_llm(context: str) -> str:
                 continue
 
         cleaned_lines.append(line)
+        prev_was_metadata = False
 
     result = "\n".join(cleaned_lines)
     # Collapse multiple blank lines
     result = re.sub(r'\n{3,}', '\n\n', result)
     # Remove any remaining lone bullet chars on their own line
     result = re.sub(r'^\s*[•◦▪]\s*$', '', result, flags=re.MULTILINE)
+    # Remove trailing standalone section headers that appear at end of a line
+    # (e.g., "...breast-ultrasound images. Dataset" -> "...breast-ultrasound images.")
+    standalone_headers_pattern = '|'.join(re.escape(h.title()) for h in standalone_headers)
+    result = re.sub(
+        r'([.!?])\s+(?:' + standalone_headers_pattern + r')\s*$',
+        r'\1', result, flags=re.MULTILINE
+    )
     return result.strip()
 
 
@@ -229,6 +270,9 @@ async def generate_response(user_message: str) -> dict:
 
     sources = [r["metadata"].get("source", "profile") for r in results if r.get("metadata")]
 
+    # Clean context to remove metadata before sending to LLM or fallback
+    clean_context = _clean_context_for_llm(context)
+
     # If no HF API token, return a fallback response
     if not settings.HF_API_TOKEN:
         logger.warning(
@@ -236,7 +280,7 @@ async def generate_response(user_message: str) -> dict:
             "Set HF_API_TOKEN environment variable to enable AI-generated responses."
         )
         return {
-            "response": _generate_fallback_response(user_message, context),
+            "response": _generate_fallback_response(user_message, clean_context),
             "sources": list(set(sources)),
         }
 
@@ -252,9 +296,6 @@ async def generate_response(user_message: str) -> dict:
             ),
             "sources": [],
         }
-
-    # Clean context to remove metadata before sending to LLM
-    clean_context = _clean_context_for_llm(context)
 
     # Call HuggingFace Inference API
     prompt = _build_prompt(user_message, clean_context)
@@ -285,7 +326,7 @@ async def generate_response(user_message: str) -> dict:
                 settings.HF_MODEL_ID,
                 user_message[:80],
             )
-            response_text = _generate_fallback_response(user_message, context)
+            response_text = _generate_fallback_response(user_message, clean_context)
 
     return {
         "response": response_text,
@@ -333,12 +374,14 @@ def _clean_response(text: str) -> str:
     # Remove ANY line matching "Label: value" metadata pattern (with or without bullet)
     # This catches Document ID, Authors, Conference, DOI, Publisher, Pages, etc.
     metadata_labels = (
-        r"Document ID|Authors?|Conference|Publisher|DOI|Pages?|"
+        r"Document ID|Authors?|Conference|Publisher|DOI link|DOI|Pages?|"
         r"Code repository|Publication date|Conference abbreviation|"
         r"Conference location|Team|Venue|Workshop abbreviation|"
         r"Official paper link|Muhammad Junayed's author position|"
         r"Employment type|Duration|Organization|Role|"
-        r"Target|Dataset|Common|Exact|Error|Comparison|Per-"
+        r"Target classes|Target|Dataset|Common abbreviation|Common|"
+        r"Training type|Evaluation|Main|Shared|Exact|Individual|"
+        r"Comparison|Per-|Error"
     )
     # Remove lines with metadata labels (with or without bullet prefix)
     text = re.sub(
@@ -358,6 +401,7 @@ def _clean_response(text: str) -> str:
     text = re.sub(r'Muhammad_Junayed_RAG_Knowledge_Base\.pdf', '', text)
 
     # Remove any remaining bullet points (lines starting with bullet chars)
+    # The LLM should NEVER output bullet points - all such lines are metadata artifacts
     text = re.sub(r'^\s*[•◦▪]\s*[^\n]*$', '', text, flags=re.MULTILINE)
     # Remove dashes/asterisks used as bullets ONLY when the line also looks like metadata
     # (contains a colon pattern or is a short label-like item <= 60 chars).
