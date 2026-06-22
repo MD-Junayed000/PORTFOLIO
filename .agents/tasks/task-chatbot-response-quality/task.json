@@ -1,0 +1,7 @@
+{
+  "task_id": "task-chatbot-response-quality",
+  "task_description": "Fix the chatbot smoke test response quality issues: the LLM echoes raw PDF metadata (Document ID, Authors, Conference, DOI, etc.) instead of generating natural language responses. Fix involves aggressive metadata stripping from context sent to LLM, robust post-processing of LLM output, improved off-topic detection, and better error handling.",
+  "status": "in_progress",
+  "feature_order": ["FEAT-001"],
+  "blocked_reason": null
+}

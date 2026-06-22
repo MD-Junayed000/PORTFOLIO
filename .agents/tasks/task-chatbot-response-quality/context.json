@@ -1,0 +1,23 @@
+{
+  "project_type": "Full-stack portfolio app (Python FastAPI backend + Next.js frontend)",
+  "language": "Python (backend), TypeScript (frontend)",
+  "build_system": "pip for backend, npm for frontend",
+  "test_framework": "pytest with anyio for async tests, conftest.py in backend/tests/",
+  "build_command": "cd /projects/sandbox/PORTFOLIO/frontend && npm run build",
+  "test_command": "cd /projects/sandbox/PORTFOLIO/backend && TESTING=true SECRET_KEY=test-key python -m pytest tests/ -v",
+  "verification_instructions": "1. Run backend tests with pytest. 2. Run frontend build with npm run build.",
+  "snapshot_or_generated_files": null,
+  "setup_instructions": "cd /projects/sandbox/PORTFOLIO/backend && pip install -r requirements.txt",
+  "environment_constraints": "Full internet access. HF_API_TOKEN may not be available in test environment so chatbot tests use fallback mode.",
+  "contribution_requirements": "None specified beyond passing tests.",
+  "key_patterns": "Backend uses FastAPI routers in routers/, services in services/. Chatbot pipeline: user query -> vector_store.query() -> _clean_context_for_llm() -> _build_prompt() -> _call_hf_api() -> _clean_response(). Off-topic detection via _is_off_topic(). Fallback responses via _generate_fallback_response() when no HF token.",
+  "relevant_files": [
+    "backend/services/chatbot.py",
+    "backend/services/vector_store.py",
+    "backend/routers/admin.py",
+    "backend/tests/test_api.py",
+    "backend/tests/conftest.py",
+    "backend/config.py"
+  ],
+  "directory_structure": "backend/ contains FastAPI app. backend/services/chatbot.py is the main file to fix. backend/services/vector_store.py handles RAG retrieval. backend/routers/admin.py has the smoke-test endpoint. backend/tests/ has existing tests."
+}

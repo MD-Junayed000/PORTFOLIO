@@ -15,7 +15,9 @@ SYSTEM_PROMPT = """You are Muhammad Junayed's portfolio assistant. Answer questi
 
 Rules:
 - Use ONLY the context to answer. Be concise (2-4 sentences).
-- Speak naturally. Never output bullet points, metadata, or raw formatting from the context.
+- Speak naturally in complete sentences. NEVER use bullet points or lists.
+- NEVER include metadata fields such as Document ID, Authors, Conference, DOI, Publisher, Pages, Code repository, Publication date, or any "Key: Value" formatted data in your response.
+- NEVER echo raw formatting, section headers, or structured data from the context.
 - If the question is unrelated to Junayed's portfolio (weather, opinions, general knowledge), say: "I can only answer questions about Muhammad Junayed's portfolio and background."
 - If the context doesn't contain the answer, say you don't have that specific information.
 
@@ -56,9 +58,27 @@ def _is_off_topic(message: str) -> bool:
         "competition", "conference", "ieee", "acl", "semeval", "televerse", "arobot",
         "rickshaw", "bistro", "sensor", "iot", "embedded", "extracurricular",
         "volunteer", "activity", "club", "society", "training", "trainee",
-        "supervisor", "he", "his", "him",
+        "supervisor",
     ]
+
+    # Pronouns alone are NOT sufficient to indicate portfolio relevance.
+    # They only count if combined with a substantive keyword or a longer message.
+    pronoun_keywords = ["he", "his", "him"]
+
     has_portfolio_relevance = any(kw in message_lower for kw in portfolio_keywords)
+
+    # Check if pronouns are present (word-boundary match to avoid false positives)
+    has_pronoun = any(
+        re.search(r'\b' + re.escape(p) + r'\b', message_lower) for p in pronoun_keywords
+    )
+
+    # Pronouns only count as portfolio-relevant if the message ALSO contains
+    # a substantive portfolio keyword OR is longer than 6 words
+    if not has_portfolio_relevance and has_pronoun:
+        if len(message.split()) > 6:
+            has_portfolio_relevance = True
+        # Otherwise pronouns alone don't make it portfolio-relevant
+
     # Short generic questions without portfolio keywords are likely off-topic
     if not has_portfolio_relevance and len(message.split()) <= 6:
         return True
@@ -68,38 +88,74 @@ def _is_off_topic(message: str) -> bool:
 def _clean_context_for_llm(context: str) -> str:
     """Remove metadata artifacts from context to prevent LLM from echoing them.
     
-    The PDF contains structured metadata in '• Key: Value' format that the LLM
+    The PDF contains structured metadata in '* Key: Value' format that the LLM
     tends to echo verbatim. Strip all of these and keep only narrative text.
     """
     lines = context.split("\n")
     cleaned_lines = []
+
+    # Section headers that should be removed when they appear alone on a line
+    standalone_headers = {
+        "research problem", "approach", "dataset", "images", "keywords",
+        "key contributions", "methodology", "results", "conclusion",
+    }
+
     for line in lines:
         stripped = line.strip()
-        # Skip ANY bullet point that follows "• CapitalizedWord(s): value" pattern
-        # This catches Document ID, Authors, Conference, Publisher, DOI, Pages, etc.
-        if re.match(r'^[•◦▪-]\s*[A-Z][^:]{1,60}:\s', stripped):
+
+        # Skip empty lines (will re-add paragraph breaks later)
+        if not stripped:
+            cleaned_lines.append("")
             continue
-        # Also skip bullets with lowercase metadata keys common in the PDF
-        if re.match(r'^[•◦▪-]\s*(?:document|project|role|repository|code|doi|publisher|conference|publication|pages|common|target|dataset|muhammad|information|exact|official|error|comparison|per-)', stripped, re.IGNORECASE):
+
+        # Skip ANY line matching Key: Value metadata pattern (with or without bullet)
+        # This catches Document ID, Authors, Conference, DOI, Publisher, Pages, etc.
+        if re.match(r'^[\s•◦▪\-*]*[A-Za-z][^:]{0,60}:\s+.+', stripped):
             continue
-        # Skip "Keywords" lines at the end of sections  
-        if stripped.lower().startswith("keywords") and ";" in stripped:
+
+        # Skip standalone section headers
+        if stripped.lower().rstrip(":").strip() in standalone_headers:
             continue
-        # Skip standalone section numbers like "- 11." or "- 5."
-        if re.match(r'^-\s*\d+\.?\s*$', stripped):
+
+        # Skip lines that are just URLs (DOI links, code repo links, etc.)
+        if re.match(r'^https?://', stripped):
             continue
+
         # Skip "Information Not Provided" markers
         if "information not provided" in stripped.lower():
             continue
-        # Skip lines that are just "Images" (artifact from PDF parsing)
-        if stripped == "Images":
+
+        # Skip lines that are just standalone labels like "Images"
+        if stripped in ("Images", "Keywords"):
             continue
+
+        # Skip "Keywords" lines with semicolons (keyword lists)
+        if stripped.lower().startswith("keywords") and ";" in stripped:
+            continue
+
+        # Skip standalone section numbers like "- 11." or "- 5."
+        if re.match(r'^[\-*•]\s*\d+\.?\s*$', stripped):
+            continue
+
+        # Skip lines that are pure bullet points with no narrative content
+        # (e.g., lines that are just a bullet char or bullet + short label)
+        if re.match(r'^[•◦▪\-*]\s*$', stripped):
+            continue
+
+        # Skip lines starting with bullet chars that look like list metadata
+        if re.match(r'^[•◦▪\-*]\s+[A-Z][^.!?]{0,80}$', stripped) and ':' not in stripped:
+            # This is a standalone bullet label without sentence structure - skip
+            # But keep it if it looks like a real sentence (has a verb-like structure)
+            words = stripped.lstrip('•◦▪-* ').split()
+            if len(words) <= 4:
+                continue
+
         cleaned_lines.append(line)
-    
+
     result = "\n".join(cleaned_lines)
     # Collapse multiple blank lines
     result = re.sub(r'\n{3,}', '\n\n', result)
-    # Remove any remaining "• " at start of lines that might be leftover
+    # Remove any remaining lone bullet chars on their own line
     result = re.sub(r'^\s*[•◦▪]\s*$', '', result, flags=re.MULTILINE)
     return result.strip()
 
@@ -166,13 +222,24 @@ async def generate_response(user_message: str) -> dict:
         response_text = await _call_hf_api(prompt)
         logger.info("Successfully generated response via HF API for query: %s", user_message[:80])
     except Exception as e:
-        logger.error(
-            "HF API call failed, using fallback. Error: %s | Model: %s | Query: %s",
+        logger.warning(
+            "HF API call failed (attempt 1), retrying in 2 seconds. Error: %s | Query: %s",
             str(e),
-            settings.HF_MODEL_ID,
             user_message[:80],
         )
-        response_text = _generate_fallback_response(user_message, context)
+        # Retry once after a 2-second delay for transient failures
+        try:
+            await asyncio.sleep(2)
+            response_text = await _call_hf_api(prompt)
+            logger.info("Successfully generated response via HF API on retry for query: %s", user_message[:80])
+        except Exception as retry_e:
+            logger.error(
+                "HF API retry also failed, using fallback. Error: %s | Model: %s | Query: %s",
+                str(retry_e),
+                settings.HF_MODEL_ID,
+                user_message[:80],
+            )
+            response_text = _generate_fallback_response(user_message, context)
 
     return {
         "response": response_text,
@@ -217,18 +284,48 @@ def _clean_response(text: str) -> str:
             else:
                 text = ""
 
-    # Remove ALL metadata bullet patterns the LLM might echo
-    # Pattern: any line starting with • followed by a label and colon
-    text = re.sub(r'[•◦▪-]\s*[A-Z][^:\n]{1,60}:\s*[^\n]*\n?', '', text)
-    text = re.sub(r'[•◦▪-]\s*(?:document|project|role|repository|code|doi|publisher|conference|publication|pages|common|target|dataset|muhammad|information|exact|official|error|comparison)[^:\n]*:\s*[^\n]*\n?', '', text, flags=re.IGNORECASE)
+    # Remove ANY line matching "Label: value" metadata pattern (with or without bullet)
+    # This catches Document ID, Authors, Conference, DOI, Publisher, Pages, etc.
+    metadata_labels = (
+        r"Document ID|Authors?|Conference|Publisher|DOI|Pages?|"
+        r"Code repository|Publication date|Conference abbreviation|"
+        r"Conference location|Team|Venue|Workshop abbreviation|"
+        r"Official paper link|Muhammad Junayed's author position|"
+        r"Employment type|Duration|Organization|Role|"
+        r"Target|Dataset|Common|Exact|Error|Comparison|Per-"
+    )
+    # Remove lines with metadata labels (with or without bullet prefix)
+    text = re.sub(
+        r'^[\s•◦▪\-*]*(?:' + metadata_labels + r')[^:\n]{0,40}:\s*[^\n]*\n?',
+        '', text, flags=re.MULTILINE | re.IGNORECASE
+    )
+
+    # Remove section headers appearing alone on a line
+    section_headers = r"Research Problem|Approach|Dataset|Images|Keywords|Key Contributions|Methodology|Results|Conclusion"
+    text = re.sub(
+        r'^\s*(?:' + section_headers + r')\s*:?\s*$',
+        '', text, flags=re.MULTILINE | re.IGNORECASE
+    )
+
+    # Remove "Sources:" lines and source filenames
+    text = re.sub(r'^[\s•◦▪\-*]*Sources?:?\s*[^\n]*$', '', text, flags=re.MULTILINE | re.IGNORECASE)
+    text = re.sub(r'Muhammad_Junayed_RAG_Knowledge_Base\.pdf', '', text)
+
+    # Remove any remaining bullet points (lines starting with bullet chars)
+    text = re.sub(r'^\s*[•◦▪]\s*[^\n]*$', '', text, flags=re.MULTILINE)
+    # Remove dashes used as bullets (line starts with "- " followed by content)
+    text = re.sub(r'^\s*[-*]\s+[^\n]*$', '', text, flags=re.MULTILINE)
+
     # Remove "[Section: ...]" if still present
     text = re.sub(r'\[Section:[^\]]*\]', '', text)
     # Remove "Information Not Provided" blocks
-    text = re.sub(r'Information Not Provided[^\n]*(?:\n[•◦▪][^\n]*)*', '', text, flags=re.IGNORECASE)
+    text = re.sub(r'Information Not Provided[^\n]*', '', text, flags=re.IGNORECASE)
     # Remove standalone "Images" artifact
     text = re.sub(r'^\s*Images\s*$', '', text, flags=re.MULTILINE)
     # Remove "Keywords ..." lines
     text = re.sub(r'Keywords\s+[\w;,\s]+\.?\s*', '', text)
+    # Remove standalone URLs
+    text = re.sub(r'^\s*https?://[^\s]+\s*$', '', text, flags=re.MULTILINE)
 
     # Collapse multiple newlines into max 2
     text = re.sub(r'\n{3,}', '\n\n', text)
@@ -280,7 +377,7 @@ async def _call_hf_api(prompt: str) -> str:
     payload = {
         "inputs": prompt,
         "parameters": {
-            "max_new_tokens": 500,
+            "max_new_tokens": 300,
             "temperature": 0.4,
             "return_full_text": False,
         },
