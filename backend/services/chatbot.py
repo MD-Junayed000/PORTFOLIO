@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import re
+from difflib import SequenceMatcher
 from dataclasses import dataclass
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
@@ -112,6 +113,7 @@ INTENT_SKILLS = "skills"
 INTENT_THESIS = "thesis"
 INTENT_AWARDS = "awards"
 INTENT_CONTACT = "contact"
+INTENT_LOCATION = "location"
 INTENT_LANGUAGES = "languages"
 INTENT_COURSEWORK = "coursework"
 INTENT_EXTRACURRICULAR = "extracurricular"
@@ -174,6 +176,11 @@ INTENT_INSTRUCTIONS = {
         "Provide only the requested public contact or profile information in a "
         "natural sentence."
     ),
+    INTENT_LOCATION: (
+        "State only the documented general location. If the user asks for a "
+        "home or street address, explain that the portfolio provides only the "
+        "general location and does not contain an exact residential address."
+    ),
     INTENT_LANGUAGES: (
         "State his documented languages and proficiency levels accurately."
     ),
@@ -201,6 +208,7 @@ INTENT_SECTION_NUMBERS = {
     INTENT_EXPERIENCE: ("5.1", "5.2"),
     INTENT_RESEARCH_SUMMARY: ("4.1", "4.2", "4.3", "9.1", "9.2", "9.3"),
     INTENT_CONTACT: ("2",),
+    INTENT_LOCATION: ("2",),
     INTENT_LANGUAGES: ("13.1", "13.2"),
     INTENT_COURSEWORK: ("8.1", "8.2", "8.3", "8.4"),
     INTENT_EXTRACURRICULAR: ("11.1", "11.2", "11.3"),
@@ -233,6 +241,8 @@ PROJECT_ALIASES: Dict[str, Tuple[str, ...]] = {
     "10.5": (
         "bistro-92",
         "bistro 92",
+        "bistro",
+        "bisto",
         "restaurant management system",
     ),
     "10.6": (
@@ -324,9 +334,41 @@ class IntentResult:
 # Text matching and intent detection
 # ---------------------------------------------------------------------------
 
-def _normalize_text(text: str) -> str:
-    text = text.lower().replace("_", " ")
+def _repair_pdf_artifacts(text: str) -> str:
+    """Repair common spacing artifacts introduced by PDF extraction."""
+    if not text:
+        return ""
+
+    text = (
+        text.replace("\u00ad", "")
+        .replace("\ufffe", "-")
+        .replace("\r\n", "\n")
+        .replace("\r", "\n")
+    )
     text = re.sub(r"[\u2010-\u2015]", "-", text)
+
+    # Repair only one-sided spacing around a compound hyphen.
+    # "Residual -Stream" -> "Residual-Stream"
+    # "Graph- Type" -> "Graph-Type"
+    # Preserve intentional separators such as "NodeScape - Graph".
+    text = re.sub(
+        r"(?<=[A-Za-z0-9])\s+-(?=[A-Za-z0-9])",
+        "-",
+        text,
+    )
+    text = re.sub(
+        r"(?<=[A-Za-z0-9])-\s+(?=[A-Za-z0-9])",
+        "-",
+        text,
+    )
+
+    # Remove spaces before punctuation without joining normal words.
+    text = re.sub(r"\s+([,.;:!?])", r"\1", text)
+    return text
+
+
+def _normalize_text(text: str) -> str:
+    text = _repair_pdf_artifacts(text).lower().replace("_", " ")
     text = re.sub(r"[^a-z0-9+#.\-\s]", " ", text)
     text = re.sub(r"\s+", " ", text)
     return text.strip()
@@ -349,18 +391,63 @@ def _contains_term(text: str, term: str) -> bool:
 def _find_alias(
     message: str,
     aliases: Dict[str, Tuple[str, ...]],
+    allow_fuzzy: bool = True,
 ) -> Optional[Tuple[str, str]]:
-    """Return the section and matched alias, preferring the longest alias."""
+    """Return an exact alias match, then tolerate one small user typo."""
     candidates: List[Tuple[int, str, str]] = []
     for section_number, names in aliases.items():
         for name in names:
             if _contains_term(message, name):
                 candidates.append((len(name), section_number, name))
 
-    if not candidates:
+    if candidates:
+        _, section_number, matched_name = max(
+            candidates,
+            key=lambda item: item[0],
+        )
+        return section_number, matched_name
+
+    if not allow_fuzzy:
         return None
 
-    _, section_number, matched_name = max(candidates, key=lambda item: item[0])
+    ignored = {
+        "tell", "about", "this", "that", "project", "paper", "research",
+        "details", "detail", "please", "explain", "more", "his", "the",
+        "what", "does", "work", "with", "uses", "used",
+    }
+    message_tokens = [
+        token
+        for token in re.findall(r"[a-z0-9]+", _normalize_text(message))
+        if len(token) >= 5 and token not in ignored
+    ]
+
+    fuzzy_candidates: List[Tuple[float, str, str]] = []
+    for section_number, names in aliases.items():
+        for name in names:
+            alias_tokens = [
+                token
+                for token in re.findall(r"[a-z0-9]+", _normalize_text(name))
+                if len(token) >= 5 and token not in ignored
+            ]
+            for message_token in message_tokens:
+                for alias_token in alias_tokens:
+                    ratio = SequenceMatcher(
+                        None,
+                        message_token,
+                        alias_token,
+                    ).ratio()
+                    if ratio >= 0.84:
+                        fuzzy_candidates.append(
+                            (ratio, section_number, name)
+                        )
+
+    if not fuzzy_candidates:
+        return None
+
+    _, section_number, matched_name = max(
+        fuzzy_candidates,
+        key=lambda item: item[0],
+    )
     return section_number, matched_name
 
 
@@ -423,6 +510,12 @@ def _is_off_topic(message: str) -> bool:
     if not normalized:
         return True
 
+    if _find_alias(normalized, PROJECT_ALIASES) or _find_alias(
+        normalized,
+        RESEARCH_ALIASES,
+    ):
+        return False
+
     # Portfolio category words are valid even without explicitly naming Junayed.
     portfolio_terms = (
         "research",
@@ -447,6 +540,9 @@ def _is_off_topic(message: str) -> bool:
         "contact",
         "email",
         "phone",
+        "address",
+        "location",
+        "home address",
         "supervisor",
         "internship",
         "languages",
@@ -543,6 +639,20 @@ def _detect_intent(
     if any(
         _contains_term(normalized, term)
         for term in (
+            "address",
+            "home address",
+            "street address",
+            "location",
+            "where does he live",
+            "where is he based",
+            "where is he from",
+        )
+    ):
+        return IntentResult(INTENT_LOCATION)
+
+    if any(
+        _contains_term(normalized, term)
+        for term in (
             "linkedin",
             "github",
             "google scholar",
@@ -580,6 +690,7 @@ def _detect_intent(
     if any(
         _contains_term(normalized, term)
         for term in (
+            "project",
             "projects",
             "project summary",
             "portfolio projects",
@@ -794,12 +905,7 @@ def _clean_context_for_llm(context: str) -> str:
     if not context:
         return ""
 
-    context = (
-        context.replace("\u00ad", "")
-        .replace("\ufffe", "-")
-        .replace("\r\n", "\n")
-        .replace("\r", "\n")
-    )
+    context = _repair_pdf_artifacts(context)
     context = re.sub(r"(?im)^\s*Page\s+\d+(?:\s*/\s*\d+)?\s*$", "", context)
 
     internal_pattern = re.compile(
@@ -890,7 +996,17 @@ def _clean_context_for_llm(context: str) -> str:
 
 def _metadata_section(result: Dict[str, Any]) -> str:
     metadata = result.get("metadata") or {}
-    return str(metadata.get("section") or "Relevant portfolio information")
+    section = str(
+        metadata.get("section") or "Relevant portfolio information"
+    )
+    section = _repair_pdf_artifacts(section)
+    section = re.split(
+        r"\s*[•◦▪]\s*|\s+Document\s+ID\s*:",
+        section,
+        maxsplit=1,
+        flags=re.IGNORECASE,
+    )[0]
+    return section.strip(" -:") or "Relevant portfolio information"
 
 
 def _result_sort_key(result: Dict[str, Any]) -> Tuple[int, ...]:
@@ -907,11 +1023,41 @@ def _result_sort_key(result: Dict[str, Any]) -> Tuple[int, ...]:
 
 
 def _extract_label(text: str, label: str) -> Optional[str]:
-    pattern = re.compile(
-        rf"(?im)^\s*[•◦▪\-*]?\s*{re.escape(label)}\s*:\s*(.+?)\s*$"
+    """Extract a label value, including one or more wrapped PDF lines."""
+    lines = _repair_pdf_artifacts(text).splitlines()
+    label_pattern = re.compile(
+        rf"^\s*[•◦▪\-*]?\s*{re.escape(label)}\s*:\s*(.*)$",
+        re.IGNORECASE,
     )
-    match = pattern.search(text)
-    return match.group(1).strip() if match else None
+    next_label_pattern = re.compile(
+        r"^\s*[•◦▪\-*]?\s*[A-Za-z][^:\n]{0,55}\s*:\s*.+$"
+    )
+
+    for index, raw_line in enumerate(lines):
+        match = label_pattern.match(raw_line.strip())
+        if not match:
+            continue
+
+        parts = [match.group(1).strip()]
+        for next_raw in lines[index + 1:index + 4]:
+            next_line = next_raw.strip()
+            if not next_line:
+                break
+            lower = next_line.lower().rstrip(":").strip()
+            if (
+                next_line.startswith(("•", "◦", "▪", "*"))
+                or next_label_pattern.match(next_line)
+                or lower in BLOCK_HEADERS
+                or re.match(r"^\d+(?:\.\d+)*\.?\s+", next_line)
+            ):
+                break
+            parts.append(next_line)
+
+        value = _repair_pdf_artifacts(" ".join(parts))
+        value = re.sub(r"\s+", " ", value).strip()
+        return value or None
+
+    return None
 
 
 def _extract_block(text: str, header_names: Sequence[str]) -> str:
@@ -1059,6 +1205,8 @@ def _build_prompt(
 def _clean_response(text: str) -> str:
     if not text:
         return NO_INFORMATION_RESPONSE
+
+    text = _repair_pdf_artifacts(text)
 
     for artifact in (
         "[INST]",
@@ -1216,6 +1364,7 @@ async def _call_hf_api(
 # ---------------------------------------------------------------------------
 
 def _extract_urls(text: str) -> Dict[str, str]:
+    text = _repair_pdf_artifacts(text)
     urls: Dict[str, str] = {}
     for label, url in re.findall(
         r"(?im)^\s*[•◦▪\-*]?\s*([A-Za-z][A-Za-z ]+?)\s*:\s*"
@@ -1264,17 +1413,41 @@ def _unique_sections(
 def _fallback_profile(results: Sequence[Dict[str, Any]]) -> str:
     for result in results:
         metadata = result.get("metadata") or {}
-        if str(metadata.get("section_number")) == "1":
-            text = _clean_context_for_llm(str(result.get("text") or ""))
-            text = re.sub(
-                r"^Professional Profile\s*",
-                "",
-                text,
-                flags=re.IGNORECASE,
-            )
-            summary = _first_sentences(text, 4)
-            if summary:
-                return summary
+        if str(metadata.get("section_number")) != "1":
+            continue
+
+        text = _clean_context_for_llm(str(result.get("text") or ""))
+        text = re.sub(
+            r"^(?:Professional Profile|"
+            r"Professional Profile\s*>\s*Professional Profile)\s*",
+            "",
+            text,
+            flags=re.IGNORECASE,
+        )
+        sentences = [
+            sentence.strip()
+            for sentence in re.split(r"(?<=[.!?])\s+", text)
+            if sentence.strip()
+        ]
+        if not sentences:
+            continue
+
+        first = sentences[0]
+        publication_sentence = next(
+            (
+                sentence
+                for sentence in sentences
+                if "conference publication" in sentence.lower()
+            ),
+            "",
+        )
+        return (
+            f"{first} He works across artificial intelligence, machine learning, "
+            "computer vision, NLP and large language models, RAG, backend and "
+            "cloud engineering, MLOps, distributed systems, and embedded systems. "
+            f"{publication_sentence}"
+        ).strip()
+
     return NO_INFORMATION_RESPONSE
 
 
@@ -1399,7 +1572,7 @@ def _fallback_specific_project(
     if project_type:
         article = "an" if project_type[:1].lower() in "aeiou" else "a"
         sentences.append(
-            f"It is {article} {project_type.lower()} project."
+            f"It is described as {article} {project_type.lower()}."
         )
     if problem:
         sentences.append(_first_sentences(problem, 2))
@@ -1433,21 +1606,37 @@ def _fallback_research_summary(
     if thesis:
         raw = str(thesis.get("text") or "")
         title = _extract_label(raw, "Title")
-        status = _extract_label(raw, "Status")
+        status = (_extract_label(raw, "Status") or "").lower()
         if title:
-            sentence = f"His undergraduate thesis, “{title},”"
-            if status:
-                sentence += f" is {status.lower()}"
-            sentence += "."
-            sentences.append(sentence)
-    if thesis_problem:
-        problem = _extract_block(
-            str(thesis_problem.get("text") or ""),
-            ("Research Problem",),
-        )
-        if problem:
-            sentences.append(_first_sentences(problem, 2))
+            if status.startswith("ongoing undergraduate thesis"):
+                sentences.append(
+                    f"His undergraduate thesis, “{title},” is ongoing."
+                )
+            elif status:
+                sentences.append(
+                    f"His undergraduate thesis, “{title},” has the status "
+                    f"“{status}.”"
+                )
+            else:
+                sentences.append(
+                    f"His undergraduate thesis is titled “{title}.”"
+                )
 
+    if thesis_problem:
+        problem_text = _clean_context_for_llm(
+            str(thesis_problem.get("text") or "")
+        )
+        problem_text = re.sub(
+            r"^(?:Undergraduate Thesis\s*>\s*)?Research Problem\s*",
+            "",
+            problem_text,
+            flags=re.IGNORECASE,
+        )
+        problem_sentence = _first_sentences(problem_text, 1)
+        if problem_sentence:
+            sentences.append(problem_sentence)
+
+    publication_sentences: List[str] = []
     for section_number in ("9.1", "9.2", "9.3"):
         item = by_section.get(section_number)
         if not item:
@@ -1455,25 +1644,27 @@ def _fallback_research_summary(
 
         raw = str(item.get("text") or "")
         title = _metadata_section(item)
-        problem = _extract_block(raw, ("Research Problem",))
         approach = _extract_block(raw, ("Approach",))
         result_text = _extract_block(raw, ("Main Result", "Main Finding"))
 
-        sentence = f"In “{title},” "
-        if approach:
-            sentence += _first_sentences(approach, 1)
-        elif problem:
-            sentence += _first_sentences(problem, 1)
-        else:
-            sentence += "he contributed to the reported study."
+        method = _first_sentences(approach, 1)
+        if method:
+            method = method[0].lower() + method[1:] if len(method) > 1 else method.lower()
 
+        sentence = f"For “{title},” "
+        sentence += method or "he contributed to the reported study."
         if result_text:
-            sentence += " " + _first_sentences(result_text, 1)
+            finding = _first_sentences(result_text, 1)
+            sentence += f" {finding}"
+        publication_sentences.append(sentence)
 
-        sentences.append(sentence)
+    if publication_sentences:
+        sentences.append(
+            "He has also contributed to three conference publications."
+        )
+        sentences.extend(publication_sentences)
 
     return _clean_response(" ".join(sentences)) if sentences else NO_INFORMATION_RESPONSE
-
 
 def _fallback_specific_research(
     results: Sequence[Dict[str, Any]],
@@ -1516,6 +1707,29 @@ def _fallback_specific_research(
 
     return _clean_response(" ".join(sentences))
 
+
+
+def _fallback_location(
+    question: str,
+    results: Sequence[Dict[str, Any]],
+) -> str:
+    raw = "\n".join(str(result.get("text") or "") for result in results)
+    location = _extract_label(raw, "Location")
+    normalized = _normalize_text(question)
+
+    if not location:
+        return NO_INFORMATION_RESPONSE
+
+    if any(
+        _contains_term(normalized, term)
+        for term in ("home address", "street address", "exact address", "address")
+    ):
+        return (
+            f"The portfolio lists Muhammad Junayed's general location as "
+            f"{location}. It does not provide an exact home or street address."
+        )
+
+    return f"Muhammad Junayed is based in {location}."
 
 def _fallback_contact(
     question: str,
@@ -1595,6 +1809,8 @@ def _generate_fallback_response(
         return _fallback_specific_research(result_list)
     if intent == INTENT_CONTACT:
         return _fallback_contact(user_message, result_list)
+    if intent == INTENT_LOCATION:
+        return _fallback_location(user_message, result_list)
 
     if not context or context == "No specific context available.":
         return NO_INFORMATION_RESPONSE
@@ -1664,16 +1880,19 @@ async def generate_response(
 
     resolved_message = _resolve_follow_up(message, conversation_history)
 
-    if _is_off_topic(resolved_message):
-        return {
-            "response": OFF_TOPIC_RESPONSE,
-            "sources": [],
-        }
-
     intent_result = _detect_intent(
         resolved_message,
         conversation_history=conversation_history,
     )
+
+    if (
+        intent_result.intent == INTENT_GENERAL
+        and _is_off_topic(resolved_message)
+    ):
+        return {
+            "response": OFF_TOPIC_RESPONSE,
+            "sources": [],
+        }
 
     try:
         results = await _retrieve_for_intent(
@@ -1705,7 +1924,10 @@ async def generate_response(
             intent=intent_result.intent,
             results=results,
         )
-        return {"response": response_text, "sources": sources}
+        return {
+            "response": _clean_response(response_text),
+            "sources": sources,
+        }
 
     prompt = _build_prompt(
         resolved_message,
