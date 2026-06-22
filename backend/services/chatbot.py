@@ -66,34 +66,41 @@ def _is_off_topic(message: str) -> bool:
 
 
 def _clean_context_for_llm(context: str) -> str:
-    """Remove metadata artifacts from context to prevent LLM from echoing them."""
+    """Remove metadata artifacts from context to prevent LLM from echoing them.
+    
+    The PDF contains structured metadata in '• Key: Value' format that the LLM
+    tends to echo verbatim. Strip all of these and keep only narrative text.
+    """
     lines = context.split("\n")
     cleaned_lines = []
     for line in lines:
         stripped = line.strip()
-        # Skip metadata bullet points
-        if stripped.startswith("\u2022") and any(kw in stripped.lower() for kw in [
-            "document id:", "document_id:", "project type:", "role:",
-            "repository:", "code repository:", "doi:", "doi link:",
-            "publisher:", "conference abbreviation:", "publication date:",
-            "conference location:", "pages:", "common abbreviation:",
-            "information not provided", "muhammad junayed's author position:",
-            "competition:", "exact leaderboard", "official evaluation",
-            "dataset split", "per-category", "error analysis",
-            "comparison with competing",
-        ]):
+        # Skip ANY bullet point that follows "• CapitalizedWord(s): value" pattern
+        # This catches Document ID, Authors, Conference, Publisher, DOI, Pages, etc.
+        if re.match(r'^[•◦▪-]\s*[A-Z][^:]{1,60}:\s', stripped):
             continue
-        # Skip "Keywords" lines at the end of sections
+        # Also skip bullets with lowercase metadata keys common in the PDF
+        if re.match(r'^[•◦▪-]\s*(?:document|project|role|repository|code|doi|publisher|conference|publication|pages|common|target|dataset|muhammad|information|exact|official|error|comparison|per-)', stripped, re.IGNORECASE):
+            continue
+        # Skip "Keywords" lines at the end of sections  
         if stripped.lower().startswith("keywords") and ";" in stripped:
             continue
-        # Skip section number artifacts like "- 11." or "- 5."
+        # Skip standalone section numbers like "- 11." or "- 5."
         if re.match(r'^-\s*\d+\.?\s*$', stripped):
             continue
+        # Skip "Information Not Provided" markers
+        if "information not provided" in stripped.lower():
+            continue
+        # Skip lines that are just "Images" (artifact from PDF parsing)
+        if stripped == "Images":
+            continue
         cleaned_lines.append(line)
-
+    
     result = "\n".join(cleaned_lines)
     # Collapse multiple blank lines
     result = re.sub(r'\n{3,}', '\n\n', result)
+    # Remove any remaining "• " at start of lines that might be leftover
+    result = re.sub(r'^\s*[•◦▪]\s*$', '', result, flags=re.MULTILINE)
     return result.strip()
 
 
@@ -210,14 +217,18 @@ def _clean_response(text: str) -> str:
             else:
                 text = ""
 
-    # Remove metadata patterns the LLM might echo from context
-    text = re.sub(r'\u2022\s*Document ID:\s*\S+\s*', '', text)
-    text = re.sub(r'\u2022\s*(Project type|Role|Repository|Code repository|Competition|Publisher|DOI|DOI link|Conference|Conference abbreviation|Conference location|Publication date|Pages|Common abbreviation|Dataset|Target classes|Muhammad Junayed\'s author position):\s*[^\n]*', '', text)
-    text = re.sub(r'\bKeywords\s+[\w;,\s]+\.?\s*', '', text)
+    # Remove ALL metadata bullet patterns the LLM might echo
+    # Pattern: any line starting with • followed by a label and colon
+    text = re.sub(r'[•◦▪-]\s*[A-Z][^:\n]{1,60}:\s*[^\n]*\n?', '', text)
+    text = re.sub(r'[•◦▪-]\s*(?:document|project|role|repository|code|doi|publisher|conference|publication|pages|common|target|dataset|muhammad|information|exact|official|error|comparison)[^:\n]*:\s*[^\n]*\n?', '', text, flags=re.IGNORECASE)
     # Remove "[Section: ...]" if still present
     text = re.sub(r'\[Section:[^\]]*\]', '', text)
     # Remove "Information Not Provided" blocks
-    text = re.sub(r'Information Not Provided[^\n]*(?:\n\u2022[^\n]*)*', '', text)
+    text = re.sub(r'Information Not Provided[^\n]*(?:\n[•◦▪][^\n]*)*', '', text, flags=re.IGNORECASE)
+    # Remove standalone "Images" artifact
+    text = re.sub(r'^\s*Images\s*$', '', text, flags=re.MULTILINE)
+    # Remove "Keywords ..." lines
+    text = re.sub(r'Keywords\s+[\w;,\s]+\.?\s*', '', text)
 
     # Collapse multiple newlines into max 2
     text = re.sub(r'\n{3,}', '\n\n', text)
@@ -513,7 +524,7 @@ def _generate_fallback_response(user_message: str, context: str) -> str:
         )
 
     # Work/experience requests
-    if any(word in message_lower for word in ["work", "job", "employ", "intern", "company", "experience"]) and not any(w in message_lower for w in ["project", "built"]):
+    if any(word in message_lower for word in ["work", "job", "employ", "intern", "company", "experience"]) and not any(w in message_lower for w in ["project", "built", "research", "paper", "publication"]):
         return (
             "Muhammad Junayed has worked at:\n"
             "- Software Engineer Intern at Poridhi.io (cloud-native infrastructure)\n"
