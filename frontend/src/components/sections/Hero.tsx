@@ -70,6 +70,11 @@ export default function Hero() {
     ? `${API_BASE_URL}${rawCvUrl}`
     : rawCvUrl;
 
+  // Profile image: use API photo_url if available, fallback to static image
+  const profileImageSrc = about?.photo_url 
+    ? (about.photo_url.startsWith("/uploads/") ? `${API_BASE_URL}${about.photo_url}` : about.photo_url)
+    : "/images/profile.png";
+
   return (
     <section className="relative min-h-screen flex items-center justify-center pt-32 md:pt-40">
       <div className="relative z-10 max-w-4xl mx-auto px-4 sm:px-6 lg:px-8 text-center">
@@ -82,7 +87,7 @@ export default function Hero() {
           {/* Profile Image */}
           <div className="relative w-48 h-48 sm:w-60 sm:h-60 mb-6 rounded-full overflow-hidden border-4 border-primary/20 shadow-lg">
             <Image
-              src="/images/profile.png"
+              src={profileImageSrc}
               alt="Muhammad Junayed"
               fill
               className="object-cover"

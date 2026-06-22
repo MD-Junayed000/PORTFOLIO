@@ -21,6 +21,8 @@ Guidelines:
 5. Keep answers concise (2-4 sentences) unless the user asks for detail.
 6. Never invent information. If the context doesn't have the answer, say so honestly.
 7. You can handle follow-up questions and casual conversation about Junayed naturally.
+8. NEVER include section labels like [Section: ...], document IDs, bullet metadata, or raw formatting in your response. Synthesize the information into natural language.
+9. Do not repeat the context verbatim. Rephrase and summarize in your own words.
 
 Context from knowledge base:
 {context}
@@ -46,12 +48,14 @@ def _is_off_topic(message: str) -> bool:
     # AND doesn't ask about skills/projects/experience/education etc, it's likely off-topic
     portfolio_keywords = [
         "junayed", "skill", "project", "experience", "education", "research",
-        "paper", "publication", "work", "built", "tech", "stack", "language",
+        "paper", "publication", "work", "works", "working", "job", "employ", "employed",
+        "built", "tech", "stack", "language",
         "linkedin", "github", "email", "contact", "phone", "address", "cv",
         "resume", "certificate", "background", "about", "who", "qualification",
         "university", "cuet", "degree", "internship", "company", "kaggle",
         "scholar", "award", "achievement", "portfolio",
         "live", "lives", "located", "home", "city", "country", "place", "from", "based",
+        "cgpa", "gpa", "grade", "result", "score", "marks",
     ]
     has_portfolio_relevance = any(kw in message_lower for kw in portfolio_keywords)
     # Short generic questions without portfolio keywords are likely off-topic
@@ -78,23 +82,13 @@ async def generate_response(user_message: str) -> dict:
     # Retrieve relevant context from vector store (5 chunks for better coverage)
     results = vector_query(user_message, n_results=5)
 
-    # Build context with section heading labels
+    # Build context from retrieved chunks (no section labels - they leak into responses)
     context_parts = []
     for r in results:
-        metadata = r.get("metadata", {})
-        section_label = metadata.get("section", "")
-        subsection_label = metadata.get("subsection", "")
-        if section_label and subsection_label and subsection_label != section_label:
-            label = f"[Section: {section_label} - {subsection_label}]"
-        elif section_label:
-            label = f"[Section: {section_label}]"
-        else:
-            label = ""
-        if label:
-            context_parts.append(f"{label}\n{r['text']}")
-        else:
-            context_parts.append(r["text"])
-
+        text = r.get("text", "").strip()
+        if text:
+            context_parts.append(text)
+    
     context = "\n\n".join(context_parts) if context_parts else "No specific context available."
 
     sources = [r["metadata"].get("source", "profile") for r in results if r.get("metadata")]
@@ -401,7 +395,7 @@ def _generate_fallback_response(user_message: str, context: str) -> str:
         )
 
     # Address/location requests
-    if any(word in message_lower for word in ["address", "location", "where", "live", "based"]):
+    if any(word in message_lower for word in ["address", "location", "live", "based", "home"]) and not any(w in message_lower for w in ["work", "job", "company", "employ"]):
         # Check context for address info
         if context and context != "No specific context available.":
             address_match = re.search(r'address[:\s-]+([^\n,]+)', context, re.IGNORECASE)
