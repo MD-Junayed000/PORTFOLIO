@@ -10,18 +10,52 @@ from services.vector_store import query as vector_query
 logger = logging.getLogger(__name__)
 
 
-SYSTEM_PROMPT = """You are a helpful, friendly AI assistant on Muhammad Junayed's portfolio website. You answer questions about Muhammad Junayed using ONLY the context provided below. Be conversational, confident, and concise.
+SYSTEM_PROMPT = """You are a friendly, conversational AI assistant on Muhammad Junayed's portfolio website. Your role is to help visitors learn about Muhammad Junayed.
 
-Rules:
-- Answer based on the context. If the context has relevant info, present it clearly.
-- If asked about something not in the context (like personal opinions, off-topic questions), politely say you can only share information available in the portfolio.
-- Never make up facts. If unsure, say so.
-- Keep responses under 3-4 sentences unless more detail is needed.
-- Include specific details like URLs, dates, and names when available in context.
+Guidelines:
+1. Answer questions about Muhammad Junayed using the context below. Be natural and conversational.
+2. If the context contains the answer, respond confidently with specific details.
+3. If asked something NOT covered in the context (like weather, general knowledge, opinions), politely explain you can only discuss Muhammad Junayed's portfolio, skills, and background.
+4. For greetings, be warm and suggest what you can help with.
+5. Keep answers concise (2-4 sentences) unless the user asks for detail.
+6. Never invent information. If the context doesn't have the answer, say so honestly.
+7. You can handle follow-up questions and casual conversation about Junayed naturally.
 
-Context:
+Context from knowledge base:
 {context}
 """
+
+
+# Detect off-topic questions that have nothing to do with a person's portfolio
+OFF_TOPIC_KEYWORDS = [
+    "weather", "sports", "game score", "movie", "recipe", "cook",
+    "joke", "funny", "news today", "stock", "crypto", "bitcoin",
+    "president", "politics", "war", "religion", "god",
+    "meaning of life", "what time", "calculate", "math",
+    "translate", "write code", "debug", "fix my",
+]
+
+
+def _is_off_topic(message: str) -> bool:
+    message_lower = message.lower()
+    # Check for off-topic keywords
+    if any(kw in message_lower for kw in OFF_TOPIC_KEYWORDS):
+        return True
+    # If the message doesn't mention junayed/portfolio-related terms
+    # AND doesn't ask about skills/projects/experience/education etc, it's likely off-topic
+    portfolio_keywords = [
+        "junayed", "skill", "project", "experience", "education", "research",
+        "paper", "publication", "work", "built", "tech", "stack", "language",
+        "linkedin", "github", "email", "contact", "phone", "address", "cv",
+        "resume", "certificate", "background", "about", "who", "qualification",
+        "university", "cuet", "degree", "internship", "company", "kaggle",
+        "scholar", "award", "achievement", "portfolio",
+    ]
+    has_portfolio_relevance = any(kw in message_lower for kw in portfolio_keywords)
+    # Short generic questions without portfolio keywords are likely off-topic
+    if not has_portfolio_relevance and len(message.split()) <= 6:
+        return True
+    return False
 
 
 async def generate_response(user_message: str) -> dict:
@@ -42,6 +76,18 @@ async def generate_response(user_message: str) -> dict:
         return {
             "response": _generate_fallback_response(user_message, context),
             "sources": list(set(sources)),
+        }
+
+    # Detect off-topic questions before calling the HF API
+    if _is_off_topic(user_message):
+        return {
+            "response": (
+                "I'm specifically designed to answer questions about Muhammad Junayed — "
+                "his skills, projects, research, experience, and background. "
+                "I can't help with general questions outside his portfolio. "
+                "What would you like to know about him?"
+            ),
+            "sources": [],
         }
 
     # Call HuggingFace Inference API
@@ -81,7 +127,7 @@ async def _call_hf_api(prompt: str) -> str:
         },
     }
 
-    async with httpx.AsyncClient(timeout=30.0) as client:
+    async with httpx.AsyncClient(timeout=60.0) as client:
         response = await client.post(url, json=payload, headers=headers)
         if response.status_code != 200:
             error_detail = response.text[:300]
@@ -143,6 +189,15 @@ def _generate_fallback_response(user_message: str, context: str) -> str:
             "Hello! I'm Muhammad Junayed's AI assistant. "
             "I can tell you about his projects, skills, research, and experience. "
             "What would you like to know?"
+        )
+
+    # Detect off-topic questions
+    if _is_off_topic(user_message):
+        return (
+            "I'm specifically designed to answer questions about Muhammad Junayed — "
+            "his skills, projects, research, experience, and background. "
+            "I can't help with general questions outside his portfolio. "
+            "What would you like to know about him?"
         )
 
     # If no meaningful context, check keyword-based answers first before giving generic response

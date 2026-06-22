@@ -127,18 +127,23 @@ def query(question: str, n_results: int = 3) -> List[Dict]:
     collection = get_collection()
     if collection.count() == 0:
         return []
-    # Fetch more results than needed for re-ranking
     fetch_count = min(n_results * 2, collection.count())
     results = collection.query(
         query_texts=[question],
         n_results=fetch_count,
+        include=["documents", "metadatas", "distances"],
     )
     documents = results.get("documents", [[]])[0]
     metadatas = results.get("metadatas", [[]])[0]
-    items = [
-        {"text": doc, "metadata": meta}
-        for doc, meta in zip(documents, metadatas)
-    ]
+    distances = results.get("distances", [[]])[0]
+
+    # Filter by relevance threshold (cosine distance: lower = more similar)
+    RELEVANCE_THRESHOLD = 1.5
+    items = []
+    for doc, meta, dist in zip(documents, metadatas, distances):
+        if dist <= RELEVANCE_THRESHOLD:
+            items.append({"text": doc, "metadata": meta, "distance": dist})
+
     # Re-rank by keyword overlap
     reranked = _rerank_results(items, question)
     return reranked[:n_results]
