@@ -1,497 +1,1021 @@
-"""Unit tests for chatbot service functions."""
-import pytest
-import sys
-import os
-
-# Add parent directory to path for imports
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-
-# Set test environment variables BEFORE importing
-os.environ["TESTING"] = "true"
-os.environ["SECRET_KEY"] = "test-secret-key-for-testing-only"
-
-from services.chatbot import _clean_context_for_llm, _clean_response, _is_off_topic
-
-
-class TestCleanContextForLLM:
-    """Test _clean_context_for_llm strips metadata and keeps narrative text."""
-
-    def test_strips_document_id(self):
-        context = "• Document ID: doc_123\nJunayed is an AI researcher."
-        result = _clean_context_for_llm(context)
-        assert "Document ID" not in result
-        assert "doc_123" not in result
-        assert "Junayed is an AI researcher" in result
-
-    def test_strips_authors_metadata(self):
-        context = "• Authors: Muhammad Junayed, John Doe\nHe published at IEEE."
-        result = _clean_context_for_llm(context)
-        assert "Authors:" not in result
-        assert "He published at IEEE" in result
-
-    def test_strips_conference_metadata(self):
-        context = "• Conference: ICAEEE 2024\n• DOI: 10.1109/xyz\nThe paper studies hallucinations."
-        result = _clean_context_for_llm(context)
-        assert "Conference:" not in result
-        assert "DOI:" not in result
-        assert "The paper studies hallucinations" in result
-
-    def test_strips_publisher_pages(self):
-        context = "• Publisher: IEEE\n• Pages: 1-6\nThis work focuses on NLP."
-        result = _clean_context_for_llm(context)
-        assert "Publisher:" not in result
-        assert "Pages:" not in result
-        assert "This work focuses on NLP" in result
-
-    def test_strips_multiple_metadata_lines(self):
-        context = (
-            "• Document ID: pub_001\n"
-            "• Authors: Muhammad Junayed\n"
-            "• Conference: ICAEEE 2024\n"
-            "• DOI: 10.1109/ICAEEE62219.2024.10561848\n"
-            "• Publisher: IEEE\n"
-            "• Pages: 1-5\n"
-            "• Publication date: 2024\n"
-            "• Code repository: https://github.com/example\n"
-            "\n"
-            "This research addresses hallucination detection in LLMs."
-        )
-        result = _clean_context_for_llm(context)
-        assert "Document ID" not in result
-        assert "Authors:" not in result
-        assert "Conference:" not in result
-        assert "DOI:" not in result
-        assert "Publisher:" not in result
-        assert "Pages:" not in result
-        assert "Publication date:" not in result
-        assert "Code repository:" not in result
-        assert "This research addresses hallucination detection" in result
-
-    def test_strips_standalone_urls(self):
-        context = "https://doi.org/10.1109/xyz\nJunayed studies AI."
-        result = _clean_context_for_llm(context)
-        assert "https://doi.org" not in result
-        assert "Junayed studies AI" in result
-
-    def test_strips_information_not_provided(self):
-        context = "Information Not Provided\nJunayed is a student."
-        result = _clean_context_for_llm(context)
-        assert "Information Not Provided" not in result
-        assert "Junayed is a student" in result
-
-    def test_strips_section_headers(self):
-        context = "Research Problem\nThe paper addresses hallucination.\nApproach\nUsing probes."
-        result = _clean_context_for_llm(context)
-        assert result.strip().startswith("The paper addresses")
-        # "Research Problem" as standalone header should be removed
-        assert "Research Problem" not in result or "addresses" in result
-
-    def test_keeps_narrative_text(self):
-        context = (
-            "Muhammad Junayed is a final-year ETE student at CUET. "
-            "He specializes in AI and machine learning. "
-            "His research focuses on NLP and computer vision."
-        )
-        result = _clean_context_for_llm(context)
-        assert "Muhammad Junayed is a final-year ETE student" in result
-        assert "specializes in AI" in result
-
-    def test_strips_metadata_without_bullet(self):
-        context = "Document ID: doc_456\nAuthors: Someone\nThis is a narrative sentence."
-        result = _clean_context_for_llm(context)
-        assert "Document ID:" not in result
-        assert "Authors:" not in result
-        assert "This is a narrative sentence" in result
-
-    def test_strips_images_keyword(self):
-        context = "Images\nThe project uses CNN architectures."
-        result = _clean_context_for_llm(context)
-        assert "Images" not in result
-        assert "CNN architectures" in result
-
-    def test_preserves_narrative_with_colon(self):
-        """Colon-containing narrative sentences must survive the context cleaner.
-        This is the primary false-positive risk - sentences like 'His specialty: X'
-        should NOT be stripped even though they contain a colon pattern."""
-        context = (
-            "His specialty: machine learning and NLP.\n"
-            "His research focus: detecting hallucinations in language models.\n"
-            "The goal: building robust AI systems for production use."
-        )
-        result = _clean_context_for_llm(context)
-        assert "His specialty: machine learning and NLP" in result
-        assert "His research focus: detecting hallucinations" in result
-        assert "The goal: building robust AI systems" in result
-
-    def test_preserves_narrative_colon_with_metadata(self):
-        """Narrative sentences with colons survive while metadata is still stripped."""
-        context = (
-            "• Document ID: doc_789\n"
-            "• Authors: Muhammad Junayed\n"
-            "His specialty: machine learning and NLP.\n"
-            "The approach: using transformer architectures for detection.\n"
-            "• DOI: 10.1109/example\n"
-            "He works on several areas including: vision, NLP, and speech."
-        )
-        result = _clean_context_for_llm(context)
-        assert "Document ID" not in result
-        assert "Authors:" not in result
-        assert "DOI:" not in result
-        assert "His specialty: machine learning and NLP" in result
-        assert "The approach: using transformer architectures" in result
-        assert "He works on several areas including" in result
-
-    def test_strips_dataset_metadata(self):
-        """Dataset, Common abbreviation, Target classes must be stripped as metadata."""
-        context = (
-            "• Dataset:  Breast Ultrasound Images Dataset\n"
-            "• Common abbreviation:  BUSI\n"
-            "• Target classes:  Normal, benign, and malignant\n"
-            "A tailored Vision Transformer was developed for classification."
-        )
-        result = _clean_context_for_llm(context)
-        assert "Dataset:" not in result
-        assert "Common abbreviation:" not in result
-        assert "Target classes:" not in result
-        assert "BUSI" not in result
-        assert "tailored Vision Transformer" in result
-
-    def test_strips_training_type_metadata(self):
-        """Training type and other missing labels are caught."""
-        context = (
-            "• Training type: Industrial training\n"
-            "• DOI link: https://doi.org/10.1109/example\n"
-            "The training focused on modern software engineering workflows."
-        )
-        result = _clean_context_for_llm(context)
-        assert "Training type:" not in result
-        assert "DOI link:" not in result
-        assert "modern software engineering workflows" in result
-
-    def test_strips_multiline_metadata_continuation(self):
-        """Multi-line metadata values should not leave orphaned continuation lines."""
-        context = (
-            "• Conference:  2025 IEEE International Conference on Signal Processing, Information, Communication and\n"
-            "Systems\n"
-            "A tailored Vision Transformer was developed."
-        )
-        result = _clean_context_for_llm(context)
-        assert "Conference:" not in result
-        assert "Systems" not in result
-        assert "tailored Vision Transformer" in result
-
-    def test_strips_inline_dataset_header(self):
-        """'Dataset' appearing as trailing section header after a sentence should be removed."""
-        context = (
-            "The study investigated deep-learning-based classification of breast-ultrasound images. Dataset\n"
-            "• Dataset:  Breast Ultrasound Images Dataset"
-        )
-        result = _clean_context_for_llm(context)
-        assert "Dataset:" not in result
-        # The word "Dataset" as a trailing header should be removed
-        assert "Dataset" not in result or "deep-learning" in result
-
-    def test_bullet_catchall_strips_any_bullet_colon_pattern(self):
-        """Any line starting with bullet + words + colon should be stripped."""
-        context = (
-            "• Some Unknown Label:  some value here\n"
-            "• Another Weird Field:  another value\n"
-            "This is a narrative sentence about the research."
-        )
-        result = _clean_context_for_llm(context)
-        assert "Some Unknown Label:" not in result
-        assert "Another Weird Field:" not in result
-        assert "narrative sentence about the research" in result
-
-
-class TestCleanResponse:
-    """Test _clean_response removes metadata echoed by the LLM."""
-
-    def test_removes_document_id_line(self):
-        text = "Document ID: pub_001\nJunayed published a paper on NLP."
-        result = _clean_response(text)
-        assert "Document ID" not in result
-        assert "Junayed published a paper on NLP" in result
-
-    def test_removes_authors_line(self):
-        text = "Authors: Muhammad Junayed, John Doe\nThe paper is about hallucination detection."
-        result = _clean_response(text)
-        assert "Authors:" not in result
-        assert "hallucination detection" in result
-
-    def test_removes_conference_and_doi(self):
-        text = (
-            "Conference: ICAEEE 2024\n"
-            "DOI: 10.1109/xyz\n"
-            "The research focuses on LLMs."
-        )
-        result = _clean_response(text)
-        assert "Conference:" not in result
-        assert "DOI:" not in result
-        assert "The research focuses on LLMs" in result
-
-    def test_removes_bullet_points(self):
-        text = "• He has skills in Python\n• He knows machine learning\nJunayed is skilled in AI."
-        result = _clean_response(text)
-        assert "•" not in result
-        assert "Junayed is skilled in AI" in result
-
-    def test_removes_section_headers(self):
-        text = "Research Problem\nThe work addresses X.\nApproach\nThey use Y."
-        result = _clean_response(text)
-        # Section headers alone on a line should be removed
-        lines = [l.strip() for l in result.split('\n') if l.strip()]
-        for line in lines:
-            assert line.lower() not in ("research problem", "approach")
-
-    def test_removes_sources_line(self):
-        text = "Sources: Muhammad_Junayed_RAG_Knowledge_Base.pdf\nHe is a researcher."
-        result = _clean_response(text)
-        assert "Sources:" not in result
-        assert "Muhammad_Junayed_RAG_Knowledge_Base.pdf" not in result
-        assert "researcher" in result
-
-    def test_removes_multiple_metadata_types(self):
-        text = (
-            "• Document ID: pub_001\n"
-            "• Authors: Junayed\n"
-            "• Conference: ICAEEE\n"
-            "• DOI: 10.1109/abc\n"
-            "• Publisher: IEEE\n"
-            "• Pages: 1-5\n"
-            "Muhammad Junayed presented a paper on hallucination detection at ICAEEE 2024."
-        )
-        result = _clean_response(text)
-        assert "Document ID" not in result
-        assert "Authors:" not in result
-        assert "Publisher:" not in result
-        assert "Pages:" not in result
-        assert "hallucination detection" in result
-
-    def test_empty_input_returns_fallback(self):
-        result = _clean_response("")
-        assert "could not generate" in result.lower() or "apologize" in result.lower()
-
-    def test_preserves_natural_sentences(self):
-        text = "Muhammad Junayed is a final-year student at CUET. He specializes in AI and NLP."
-        result = _clean_response(text)
-        assert "Muhammad Junayed is a final-year student" in result
-        assert "specializes in AI" in result
-
-    def test_preserves_prose_starting_with_dash(self):
-        """Lines starting with dash that are valid prose sentences should NOT be stripped."""
-        text = (
-            "Muhammad Junayed focuses on NLP research.\n"
-            "- His work on hallucination detection has been published at IEEE conferences and received positive reviews from the community.\n"
-            "He is based in Bangladesh."
-        )
-        result = _clean_response(text)
-        # The long prose sentence with terminal punctuation should survive
-        assert "hallucination detection" in result
-        assert "Muhammad Junayed focuses on NLP research" in result
-
-    def test_removes_dataset_and_training_metadata(self):
-        """_clean_response removes Dataset, Common abbreviation, Target classes, Training type."""
-        text = (
-            "• Dataset:  Breast Ultrasound Images Dataset\n"
-            "• Common abbreviation:  BUSI\n"
-            "• Target classes:  Normal, benign, and malignant\n"
-            "• Training type:  Industrial training\n"
-            "• DOI link:  https://doi.org/10.1109/example\n"
-            "Muhammad Junayed developed a Vision Transformer for classification."
-        )
-        result = _clean_response(text)
-        assert "Dataset:" not in result
-        assert "Common abbreviation:" not in result
-        assert "Target classes:" not in result
-        assert "Training type:" not in result
-        assert "DOI link:" not in result
-        assert "Vision Transformer" in result
-
-    def test_removes_all_bullet_lines(self):
-        """All lines starting with bullet char are removed from LLM output."""
-        text = (
-            "• Organization: Brain Station 23 PLC\n"
-            "• Role: Industrial Trainee\n"
-            "• Duration: May 2025\n"
-            "Muhammad Junayed completed industrial training at Brain Station 23."
-        )
-        result = _clean_response(text)
-        assert "•" not in result
-        assert "Organization:" not in result
-        assert "Role:" not in result
-        assert "industrial training" in result
-
-
-class TestIsOffTopic:
-    """Test _is_off_topic correctly identifies off-topic vs on-topic questions."""
-
-    def test_is_he_ok_is_off_topic(self):
-        """'is he ok?' should be off-topic - bare pronoun without portfolio context."""
-        assert _is_off_topic("is he ok?") is True
-
-    def test_where_does_he_live_is_on_topic(self):
-        """'where does he live?' should be on-topic - contains 'live' keyword."""
-        assert _is_off_topic("where does he live?") is False
-
-    def test_weather_is_off_topic(self):
-        assert _is_off_topic("what is the weather?") is True
-
-    def test_sports_is_off_topic(self):
-        assert _is_off_topic("who won the sports game?") is True
-
-    def test_recipe_is_off_topic(self):
-        assert _is_off_topic("give me a recipe") is True
-
-    def test_skills_question_is_on_topic(self):
-        assert _is_off_topic("what are his skills?") is False
-
-    def test_project_question_is_on_topic(self):
-        assert _is_off_topic("tell me about his projects") is False
-
-    def test_research_question_is_on_topic(self):
-        assert _is_off_topic("what is his research about?") is False
-
-    def test_junayed_question_is_on_topic(self):
-        assert _is_off_topic("who is Junayed?") is False
-
-    def test_short_generic_is_off_topic(self):
-        """Short questions without portfolio keywords are off-topic."""
-        assert _is_off_topic("how are you?") is True
-
-    def test_calculate_is_off_topic(self):
-        assert _is_off_topic("calculate 2 + 2") is True
-
-    def test_education_is_on_topic(self):
-        assert _is_off_topic("what is his education?") is False
-
-    def test_experience_is_on_topic(self):
-        assert _is_off_topic("tell me about his work experience") is False
-
-    def test_bare_him_is_off_topic(self):
-        """'do you like him?' - bare pronoun without portfolio context is off-topic."""
-        assert _is_off_topic("do you like him?") is True
-
-    def test_his_with_portfolio_keyword_is_on_topic(self):
-        """'his' combined with portfolio keywords is on-topic."""
-        assert _is_off_topic("what is his background?") is False
-
-class TestCleanContextDisclaimers:
-    """Test _clean_context_for_llm strips disclaimer/instructional phrases."""
+import asyncio
+import logging
+import re
  
-    def test_strips_disclaimer_phrases(self):
-        """Lines with chatbot instructions and 'not documented' phrases are removed."""
-        context = (
-            "Muhammad Junayed is a researcher at CUET.\n"
-            "The chatbot should not infer these details.\n"
-            "His exact responsibilities are not documented in the provided sources.\n"
-            "He specializes in NLP and computer vision."
-        )
-        result = _clean_context_for_llm(context)
-        assert "chatbot should not infer" not in result
-        assert "not documented in the provided sources" not in result
-        assert "Muhammad Junayed is a researcher" in result
-        assert "He specializes in NLP" in result
+import httpx
+from typing import Optional
  
-    def test_strips_should_be_added_after_verification(self):
-        """Lines with 'should be added only after verification' are removed."""
-        context = (
-            "He published at IEEE conferences.\n"
-            "These values should be added only after verification from the published paper.\n"
-            "His research focuses on hallucination detection."
-        )
-        result = _clean_context_for_llm(context)
-        assert "should be added only after verification" not in result
-        assert "published at IEEE" in result
-        assert "hallucination detection" in result
+from config import settings
+from services.vector_store import query as vector_query
  
-    def test_strips_should_not_assign(self):
-        """Lines with 'should not assign' are removed."""
-        context = (
-            "Muhammad Junayed is the first author.\n"
-            "The chatbot should not assign specific contributions without verified information.\n"
-            "The paper addresses hallucination detection in LLMs."
-        )
-        result = _clean_context_for_llm(context)
-        assert "should not assign" not in result
-        assert "Muhammad Junayed is the first author" in result
-        assert "hallucination detection" in result
- 
-    def test_strips_additional_section_headers(self):
-        """'Individual Contribution' and 'Evaluation Limitation' as standalone lines are removed."""
-        context = (
-            "Individual Contribution\n"
-            "Muhammad Junayed is the first author.\n"
-            "Evaluation Limitation\n"
-            "The paper achieves state-of-the-art results.\n"
-            "Main Result\n"
-            "The model achieved 91.7 percent accuracy."
-        )
-        result = _clean_context_for_llm(context)
-        # Standalone headers should be removed
-        lines = [l.strip() for l in result.split('\n') if l.strip()]
-        for line in lines:
-            assert line.lower() not in ("individual contribution", "evaluation limitation", "main result")
-        # Content should survive
-        assert "Muhammad Junayed is the first author" in result
-        assert "state-of-the-art results" in result
-        assert "91.7 percent accuracy" in result
+logger = logging.getLogger(__name__)
  
  
-class TestCleanResponseDisclaimers:
-    """Test _clean_response strips disclaimer phrases and leaked section headers."""
+SYSTEM_PROMPT = """You are Muhammad Junayed's portfolio assistant. Answer questions about him using the context below.
  
-    def test_removes_disclaimer_phrases_from_output(self):
-        """Sentences with disclaimer phrases are stripped from LLM output."""
-        text = (
-            "Muhammad Junayed is a researcher at CUET. "
-            "His exact responsibilities are not specified in the provided sources. "
-            "He focuses on NLP and computer vision."
+Rules:
+- Use ONLY the context to answer. Be concise (2-4 sentences).
+- Speak naturally in complete sentences. NEVER use bullet points or lists.
+- NEVER include metadata fields such as Document ID, Authors, Conference, DOI, Publisher, Pages, Code repository, Publication date, or any "Key: Value" formatted data in your response.
+- NEVER echo raw formatting, section headers, or structured data from the context.
+- NEVER repeat instructional notes, disclaimers, or meta-commentary from the context (e.g., phrases about what is "not documented", "not specified", or what "should not be inferred"). Only state facts.
+- If the question is unrelated to Junayed's portfolio (weather, opinions, general knowledge), say: "I can only answer questions about Muhammad Junayed's portfolio and background."
+- If the context doesn't contain the answer, say you don't have that specific information.
+ 
+Context:
+{context}
+"""
+ 
+ 
+# Detect off-topic questions that have nothing to do with a person's portfolio
+OFF_TOPIC_KEYWORDS = [
+    "weather", "sports", "game score", "movie", "recipe", "cook",
+    "joke", "funny", "news today", "stock", "crypto", "bitcoin",
+    "president", "politics", "war", "religion", "god",
+    "meaning of life", "what time", "calculate", "math",
+    "translate", "write code", "debug", "fix my",
+]
+ 
+ 
+def _contains_term(text: str, term: str) -> bool:
+    """Match a word or phrase without accidental substring matches."""
+    pattern = r"(?<!\w)" + re.escape(term).replace(r"\ ", r"\s+") + r"(?!\w)"
+    return re.search(pattern, text, flags=re.IGNORECASE) is not None
+
+
+def _is_off_topic(message: str) -> bool:
+    """Return True when a message is clearly outside Junayed's portfolio."""
+    message_lower = message.lower().strip()
+    if not message_lower:
+        return True
+
+    # Match complete words/phrases. This prevents "war" from matching "award"
+    # and "math" from matching "mathematics".
+    if any(_contains_term(message_lower, term) for term in OFF_TOPIC_KEYWORDS):
+        return True
+
+    person_terms = ("junayed", "muhammad", "he", "his", "him")
+    has_person_reference = any(
+        _contains_term(message_lower, term) for term in person_terms
+    )
+
+    strong_portfolio_terms = (
+        "skill", "skills", "project", "projects", "experience", "education",
+        "research", "paper", "publication", "job", "employment", "employed",
+        "technology", "technologies", "tech stack", "programming language",
+        "linkedin", "github", "email", "contact", "phone", "address", "cv",
+        "resume", "certificate", "certification", "background", "qualification",
+        "university", "cuet", "degree", "internship", "company", "kaggle",
+        "scholar", "award", "awards", "achievement", "achievements",
+        "portfolio", "cgpa", "gpa", "grade", "result", "score", "marks",
+        "thesis", "course", "courses", "coursework", "speak", "bangla",
+        "english", "interest", "orcid", "doi", "poridhi", "brain station",
+        "intern", "hackathon", "competition", "conference", "ieee", "acl",
+        "semeval", "televerse", "arobot", "rickshaw", "bistro", "sensor",
+        "iot", "embedded", "extracurricular", "volunteer", "club", "society",
+        "training", "trainee", "supervisor",
+    )
+    if any(
+        _contains_term(message_lower, term)
+        for term in strong_portfolio_terms
+    ):
+        return False
+
+    # Ambiguous biographical/location words count only when the question
+    # explicitly refers to Junayed.
+    person_dependent_terms = (
+        "who", "about", "work", "works", "working", "built", "made",
+        "created", "live", "lives", "located", "home", "city", "country",
+        "place", "from", "based",
+    )
+    if has_person_reference and any(
+        _contains_term(message_lower, term)
+        for term in person_dependent_terms
+    ):
+        return False
+
+    # Mentioning Junayed by name is enough; a bare pronoun is not.
+    if _contains_term(message_lower, "junayed"):
+        return False
+    if _contains_term(message_lower, "muhammad junayed"):
+        return False
+
+    return True
+
+def _clean_context_for_llm(context: str) -> str:
+    """Remove metadata artifacts from context to prevent LLM from echoing them.
+    
+    The PDF contains structured metadata in '* Key: Value' format that the LLM
+    tends to echo verbatim. Strip all of these and keep only narrative text.
+    Also removes disclaimer/instructional phrases that the LLM tends to repeat.
+    """
+    lines = context.split("\n")
+    cleaned_lines = []
+ 
+    # Disclaimer/instructional phrases that should cause a line to be removed
+    DISCLAIMER_PHRASES = [
+        "should not infer",
+        "should not assign",
+        "not documented in the provided sources",
+        "not specified in the provided sources",
+        "not included in the source material",
+        "should be added only after verification",
+        "do not identify specific",
+        "exact responsibilities are not documented",
+        "chatbot should not",
+        "are not included in the provided sources",
+        "not included in the provided",
+        "these values should be added only",
+        "without verified information",
+    ]
+ 
+    # Section headers that should be removed when they appear alone on a line
+    standalone_headers = {
+        "research problem", "approach", "dataset", "images", "keywords",
+        "key contributions", "methodology", "results", "conclusion",
+        "individual contribution", "evaluation limitation", "main finding",
+        "evaluated tracks", "models evaluated", "shared-task rankings",
+        "exact f1 results", "main result",
+    }
+ 
+    # Known metadata labels that should always be stripped from context.
+    # This targeted approach avoids false-positives on narrative sentences
+    # that happen to contain a colon (e.g., "His focus: NLP and vision systems").
+    metadata_labels_pattern = re.compile(
+        r'^[\s•◦▪\-*]*(?:'
+        r'Document ID|Authors?|Conference|Publisher|DOI link|DOI|Pages?|'
+        r'Code repository|Publication date|Conference abbreviation|'
+        r'Conference location|Team|Venue|Workshop abbreviation|'
+        r'Official paper link|Muhammad Junayed\'s author position|'
+        r'Employment type|Duration|Organization|Role|'
+        r'Source|Title|Volume|Issue|Journal|ISSN|ISBN|'
+        r'Affiliation|Institution|Department|Year|Date|'
+        r'Keywords|Abstract|References|Citation|'
+        r'Dataset|Common abbreviation|Common|Target classes|Target|'
+        r'Training type|Evaluation|Main|Shared|Exact|Individual|'
+        r'Comparison|Per-|Error'
+        r')[^:\n]{0,40}:\s+.+',
+        re.IGNORECASE
+    )
+ 
+    # Fallback: lines with a short pre-colon segment (<=3 words, no lowercase verbs)
+    # that look like metadata labels rather than narrative sentences.
+    short_label_pattern = re.compile(
+        r'^[\s•◦▪\-*]*([A-Z][A-Za-z]*(?:\s+[A-Za-z]+){0,2}):\s+.+'
+    )
+ 
+    prev_was_metadata = False
+ 
+    for line in lines:
+        stripped = line.strip()
+ 
+        # Skip empty lines (will re-add paragraph breaks later)
+        if not stripped:
+            prev_was_metadata = False
+            cleaned_lines.append("")
+            continue
+ 
+        # Handle multi-line metadata values: if the previous line was stripped as
+        # metadata, also remove continuation lines (short lines without their own
+        # bullet, don't end with sentence-ending punctuation, and don't start a
+        # new sentence with a capital letter after whitespace).
+        if prev_was_metadata:
+            # A continuation line is typically short, has no bullet, and doesn't
+            # end with sentence-ending punctuation (., !, ?)
+            narrative_starters = (
+                "Muhammad ", "Junayed ", "He ", "His ", "The ", "A ",
+                "An ", "This ", "That ", "It ", "They ", "Their ",
+                "We ", "Our ",
+            )
+            looks_like_new_narrative = stripped.startswith(narrative_starters)
+            if (not re.match(r'^[•◦▪\-*]', stripped)
+                    and not stripped.endswith(('.', '!', '?'))
+                    and len(stripped.split()) <= 8
+                    and not looks_like_new_narrative):
+                # This looks like a continuation of the metadata value
+                # (for example, the orphaned word "Systems").
+                continue
+            # If it does look like a new item, fall through to normal processing
+            prev_was_metadata = False
+ 
+        # Skip lines matching known metadata labels (with or without bullet prefix)
+        if metadata_labels_pattern.match(stripped):
+            prev_was_metadata = True
+            continue
+ 
+        # Skip lines containing disclaimer/instructional phrases
+        stripped_lower = stripped.lower()
+        if any(phrase in stripped_lower for phrase in DISCLAIMER_PHRASES):
+            prev_was_metadata = False
+            continue
+ 
+        # For lines matching a short label pattern (<=3 capitalized words before colon),
+        # only strip if the pre-colon segment looks like a metadata label, not a narrative.
+        # Narrative sentences typically have more context before the colon or start with
+        # pronouns/articles (His, The, A, etc.)
+        short_match = short_label_pattern.match(stripped)
+        if short_match:
+            pre_colon = short_match.group(1).strip()
+            pre_colon_words = pre_colon.split()
+            # If it's a single capitalized word or a 2-word capitalized phrase
+            # AND doesn't start with common narrative starters, treat as metadata.
+            # Examples that should be stripped: "Dataset: BUSI", "Role: Intern",
+            # "Common abbreviation: BUSI", "Target classes: Normal, benign"
+            # Examples that should survive: "His focus: NLP", "The goal: detection"
+            narrative_starters = {'his', 'her', 'the', 'a', 'an', 'my', 'our', 'their', 'its', 'this', 'that'}
+            if (len(pre_colon_words) <= 2
+                    and pre_colon_words[0].lower() not in narrative_starters):
+                # Looks like a metadata label (e.g., "Publisher: IEEE", "Dataset: BUSI")
+                # but NOT "His focus: NLP" or "The goal: detecting hallucinations"
+                prev_was_metadata = True
+                continue
+ 
+        # Skip standalone section headers
+        if stripped.lower().rstrip(":").strip() in standalone_headers:
+            prev_was_metadata = False
+            continue
+ 
+        # Catch-all: ANY line starting with a bullet char followed by word(s) and a colon
+        # is treated as metadata and stripped. Bullet-prefixed "Key: Value" patterns from
+        # the PDF are always structured metadata, never narrative prose.
+        if re.match(r'^[•◦▪]\s+[A-Za-z][^:]{0,60}:\s+', stripped):
+            prev_was_metadata = True
+            continue
+ 
+        # Skip lines that are just URLs (DOI links, code repo links, etc.)
+        if re.match(r'^https?://', stripped):
+            continue
+ 
+        # Skip "Information Not Provided" markers
+        if "information not provided" in stripped.lower():
+            continue
+ 
+        # Skip lines that are just standalone labels like "Images"
+        if stripped in ("Images", "Keywords"):
+            continue
+ 
+        # Skip "Keywords" lines with semicolons (keyword lists)
+        if stripped.lower().startswith("keywords") and ";" in stripped:
+            continue
+ 
+        # Skip standalone section numbers like "- 11." or "- 5."
+        if re.match(r'^[\-*•]\s*\d+\.?\s*$', stripped):
+            continue
+ 
+        # Skip lines that are pure bullet points with no narrative content
+        # (e.g., lines that are just a bullet char or bullet + short label)
+        if re.match(r'^[•◦▪\-*]\s*$', stripped):
+            continue
+ 
+        # Skip lines starting with bullet chars that look like list metadata
+        if re.match(r'^[•◦▪\-*]\s+[A-Z][^.!?]{0,80}$', stripped) and ':' not in stripped:
+            # This is a standalone bullet label without sentence structure - skip
+            # But keep it if it looks like a real sentence (has a verb-like structure)
+            words = stripped.lstrip('•◦▪-* ').split()
+            if len(words) <= 4:
+                continue
+ 
+        cleaned_lines.append(line)
+        prev_was_metadata = False
+ 
+    result = "\n".join(cleaned_lines)
+    # Collapse multiple blank lines
+    result = re.sub(r'\n{3,}', '\n\n', result)
+    # Remove any remaining lone bullet chars on their own line
+    result = re.sub(r'^\s*[•◦▪]\s*$', '', result, flags=re.MULTILINE)
+    # Remove trailing standalone section headers that appear at end of a line
+    # (e.g., "...breast-ultrasound images. Dataset" -> "...breast-ultrasound images.")
+    standalone_headers_pattern = '|'.join(re.escape(h.title()) for h in standalone_headers)
+    result = re.sub(
+        r'([.!?])\s+(?:' + standalone_headers_pattern + r')\s*$',
+        r'\1', result, flags=re.MULTILINE
+    )
+    return result.strip()
+ 
+ 
+async def generate_response(user_message: str) -> dict:
+    """Generate a response using RAG: query vector store for context, then call HuggingFace."""
+    # Handle greetings directly (before off-topic check)
+    greeting_words = {"hello", "hi", "hey", "greetings", "howdy", "hola", "yo", "sup", "good morning", "good evening", "good afternoon"}
+    stripped = re.sub(r'[^\w\s]', '', user_message.lower()).strip()
+    if stripped in greeting_words or stripped.startswith(("hi ", "hey ", "hello ")):
+        return {
+            "response": (
+                "Hello! I'm Muhammad Junayed's AI assistant. "
+                "I can tell you about his projects, skills, research, and experience. "
+                "What would you like to know?"
+            ),
+            "sources": [],
+        }
+ 
+    # Retrieve relevant context from vector store (5 chunks for better coverage)
+    results = vector_query(user_message, n_results=5)
+ 
+    # Build context from retrieved chunks (no section labels - they leak into responses)
+    context_parts = []
+    for r in results:
+        text = r.get("text", "").strip()
+        if text:
+            context_parts.append(text)
+    
+    context = "\n\n".join(context_parts) if context_parts else "No specific context available."
+ 
+    sources = [r["metadata"].get("source", "profile") for r in results if r.get("metadata")]
+ 
+    # Clean context to remove metadata before sending to LLM or fallback
+    clean_context = _clean_context_for_llm(context)
+ 
+    # If no HF API token, return a fallback response
+    if not settings.HF_API_TOKEN:
+        logger.warning(
+            "HF_API_TOKEN is not set - using fallback response. "
+            "Set HF_API_TOKEN environment variable to enable AI-generated responses."
         )
-        result = _clean_response(text)
-        assert "not specified in the provided sources" not in result
-        assert "Muhammad Junayed is a researcher" in result
-        assert "NLP and computer vision" in result
+        return {
+            "response": _generate_fallback_response(user_message, clean_context),
+            "sources": list(set(sources)),
+        }
  
-    def test_removes_should_not_infer(self):
-        """Sentences with 'should not infer' are removed from output."""
-        text = (
-            "Muhammad Junayed is the first author. "
-            "The chatbot should not infer these details. "
-            "He works on hallucination detection."
+    # Quick off-topic detection for clearly irrelevant questions (saves API calls)
+    message_lower = user_message.lower()
+    if any(kw in message_lower for kw in OFF_TOPIC_KEYWORDS):
+        return {
+            "response": (
+                "I'm specifically designed to answer questions about Muhammad Junayed — "
+                "his skills, projects, research, experience, and background. "
+                "I can't help with general questions outside his portfolio. "
+                "What would you like to know about him?"
+            ),
+            "sources": [],
+        }
+ 
+    # Call HuggingFace Inference API
+    prompt = _build_prompt(user_message, clean_context)
+    try:
+        response_text = await _call_hf_api(prompt)
+        logger.info("Successfully generated response via HF API for query: %s", user_message[:80])
+    except Exception as e:
+        logger.warning(
+            "HF API call failed (attempt 1), retrying in 2 seconds. Error: %s | Query: %s",
+            str(e),
+            user_message[:80],
         )
-        result = _clean_response(text)
-        assert "should not infer" not in result
-        assert "first author" in result
-        assert "hallucination detection" in result
+        # Retry once after a 2-second delay for transient failures.
+        # NOTE: Worst-case latency budget: _call_hf_api has internal 503 retry with 5s sleep,
+        # so a single request path can take up to: 45s (first timeout) + 2s (sleep) +
+        # 20s (retry timeout) = ~67s before falling back. With the 503 internal retry,
+        # this could reach 45+5+45 + 2 + 20+5+20 = ~142s in the absolute worst case.
+        # A full circuit breaker is not implemented, but the shorter retry timeout (20s)
+        # limits the added latency from the retry attempt.
+        try:
+            await asyncio.sleep(2)
+            response_text = await _call_hf_api(prompt, timeout=20.0)
+            logger.info("Successfully generated response via HF API on retry for query: %s", user_message[:80])
+        except Exception as retry_e:
+            logger.error(
+                "HF API retry also failed, using fallback. Error: %s | Model: %s | Query: %s",
+                str(retry_e),
+                settings.HF_MODEL_ID,
+                user_message[:80],
+            )
+            response_text = _generate_fallback_response(user_message, clean_context)
  
-    def test_removes_leaked_section_headers(self):
-        """Section headers like 'Individual Contribution' are stripped from response."""
-        text = (
-            "Individual Contribution\n"
-            "Muhammad Junayed is the first author.\n"
-            "Evaluation Limitation\n"
-            "Results are strong."
+    return {
+        "response": response_text,
+        "sources": list(set(sources)),
+    }
+ 
+ 
+def _build_prompt(user_message: str, context: str) -> str:
+    system = SYSTEM_PROMPT.format(context=context)
+    return f"<s>[INST] {system}\n\nUser question: {user_message} [/INST]"
+ 
+ 
+def _clean_response(text: str) -> str:
+    """Post-process LLM response to remove artifacts and ensure quality."""
+    if not text:
+        return "I apologize, but I could not generate a proper response. Please try asking your question in a different way."
+ 
+    # Remove instruction artifacts
+    artifacts = ["[INST]", "[/INST]", "</s>", "<s>", "<<SYS>>", "<</SYS>>", "<|", "|>"]
+    for artifact in artifacts:
+        text = text.replace(artifact, "")
+ 
+    # Remove cases where the model echoes back the system prompt
+    # Look for the system prompt signature and remove everything before the actual answer
+    system_prompt_markers = [
+        "You are a friendly, conversational AI assistant",
+        "You are Muhammad Junayed's portfolio assistant",
+        "Context from knowledge base:",
+        "User question:",
+        "Guidelines:",
+        "Rules:",
+    ]
+    for marker in system_prompt_markers:
+        if marker in text:
+            # Find the last occurrence and take everything after it
+            idx = text.rfind(marker)
+            # Find the end of this echoed section (next newline after some content)
+            remaining = text[idx:]
+            newline_idx = remaining.find("\n\n")
+            if newline_idx > 0:
+                text = remaining[newline_idx:].strip()
+            else:
+                text = ""
+ 
+    # Remove section headers used as prefixes while preserving the answer text.
+    section_headers = (
+        r"Research Problem|Approach|Dataset|Images|Keywords|Key Contributions|"
+        r"Methodology|Results|Conclusion|Individual Contribution|"
+        r"Evaluation Limitation|Main Finding|Evaluated Tracks|Models Evaluated|"
+        r"Shared-Task Rankings|Exact F1 Results|Main Result"
+    )
+    text = re.sub(
+        rf"^\s*(?:{section_headers})\s*:?\s+(?=\S)",
+        "",
+        text,
+        flags=re.MULTILINE | re.IGNORECASE,
+    )
+
+    # Remove ANY line matching "Label: value" metadata pattern (with or without bullet)
+    # This catches Document ID, Authors, Conference, DOI, Publisher, Pages, etc.
+    metadata_labels = (
+        r"Document ID|Authors?|Conference|Publisher|DOI link|DOI|Pages?|"
+        r"Code repository|Publication date|Conference abbreviation|"
+        r"Conference location|Team|Venue|Workshop abbreviation|"
+        r"Official paper link|Muhammad Junayed's author position|"
+        r"Employment type|Duration|Organization|Role|"
+        r"Target classes|Target|Dataset|Common abbreviation|Common|"
+        r"Training type|Evaluation|Main|Shared|Exact|Individual|"
+        r"Comparison|Per-|Error"
+    )
+    # Remove lines with metadata labels (with or without bullet prefix)
+    text = re.sub(
+        r'^[\s•◦▪\-*]*(?:' + metadata_labels + r')[^:\n]{0,40}:\s*[^\n]*\n?',
+        '', text, flags=re.MULTILINE | re.IGNORECASE
+    )
+ 
+    # Remove section headers appearing alone on a line.
+    text = re.sub(
+        rf'^\s*(?:{section_headers})\s*:?\s*$',
+        '',
+        text,
+        flags=re.MULTILINE | re.IGNORECASE,
+    )
+
+    # Remove "Sources:" lines and source filenames
+    text = re.sub(r'^[\s•◦▪\-*]*Sources?:?\s*[^\n]*$', '', text, flags=re.MULTILINE | re.IGNORECASE)
+    text = re.sub(r'Muhammad_Junayed_RAG_Knowledge_Base\.pdf', '', text)
+ 
+    # Remove any remaining bullet points (lines starting with bullet chars)
+    # The LLM should NEVER output bullet points - all such lines are metadata artifacts
+    text = re.sub(r'^\s*[•◦▪]\s*[^\n]*$', '', text, flags=re.MULTILINE)
+    # Remove dashes/asterisks used as bullets ONLY when the line also looks like metadata
+    # (contains a colon pattern or is a short label-like item <= 60 chars).
+    # This avoids stripping legitimate LLM prose that starts with "- " for emphasis.
+    text = re.sub(
+        r'^\s*[-*]\s+(?=[^\n]{0,60}:[^\n]*$)[^\n]*$',
+        '', text, flags=re.MULTILINE
+    )
+    # Also remove short dash-bullet lines (<=60 chars total, no sentence-ending punctuation)
+    # which are likely list items rather than prose
+    text = re.sub(
+        r'^\s*[-*]\s+[^\n.!?]{0,55}$',
+        '', text, flags=re.MULTILINE
+    )
+ 
+    # Remove "[Section: ...]" if still present
+    text = re.sub(r'\[Section:[^\]]*\]', '', text)
+    # Remove "Information Not Provided" blocks
+    text = re.sub(r'Information Not Provided[^\n]*', '', text, flags=re.IGNORECASE)
+    # Remove standalone "Images" artifact
+    text = re.sub(r'^\s*Images\s*$', '', text, flags=re.MULTILINE)
+    # Remove "Keywords ..." lines
+    text = re.sub(r'Keywords\s+[\w;,\s]+\.?\s*', '', text)
+    # Remove standalone URLs
+    text = re.sub(r'^\s*https?://[^\s]+\s*$', '', text, flags=re.MULTILINE)
+ 
+    # Remove leaked disclaimer/instruction sentences from generated prose.
+    response_disclaimer_phrases = (
+        "should not infer",
+        "should not assign",
+        "not documented in the provided sources",
+        "not specified in the provided sources",
+        "not included in the source material",
+        "should be added only after verification",
+        "do not identify specific",
+        "exact responsibilities are not documented",
+        "chatbot should not",
+        "are not included in the provided sources",
+        "not included in the provided",
+        "these values should be added only",
+        "without verified information",
+    )
+    response_sentences = re.split(r'(?<=[.!?])\s+', text)
+    text = " ".join(
+        sentence.strip()
+        for sentence in response_sentences
+        if sentence.strip()
+        and not any(
+            phrase in sentence.lower()
+            for phrase in response_disclaimer_phrases
         )
-        result = _clean_response(text)
-        lines = [l.strip() for l in result.split('\n') if l.strip()]
-        for line in lines:
-            assert line.lower() not in ("individual contribution", "evaluation limitation")
-        assert "first author" in result
+    )
+
+    # Collapse multiple newlines into max 2
+    text = re.sub(r'\n{3,}', '\n\n', text)
  
-    def test_removes_section_header_as_prefix(self):
-        """Section headers appearing as prefixes are stripped."""
-        text = "Individual Contribution Muhammad Junayed is listed as the fourth author."
-        result = _clean_response(text)
-        assert "Individual Contribution" not in result
-        assert "Muhammad Junayed is listed as the fourth author" in result
+    # Strip leading/trailing whitespace
+    text = text.strip()
  
-    def test_removes_not_included_in_source_material(self):
-        """Sentences with 'not included in the source material' are stripped."""
-        text = (
-            "The following values are not included in the source material. "
-            "Muhammad Junayed is a talented researcher."
+    # Remove repeated sentences (keep only first occurrence)
+    sentences = re.split(r'(?<=[.!?])\s+', text)
+    seen = set()
+    unique_sentences = []
+    for sentence in sentences:
+        normalized = sentence.strip().lower()
+        if normalized and normalized not in seen:
+            seen.add(normalized)
+            unique_sentences.append(sentence.strip())
+    text = " ".join(unique_sentences)
+ 
+    # Truncate to max 1000 characters at a sentence boundary
+    if len(text) > 1000:
+        truncated = text[:1000]
+        # Find the last sentence boundary
+        last_boundary = max(
+            truncated.rfind(". "),
+            truncated.rfind("! "),
+            truncated.rfind("? "),
+            truncated.rfind(".\n"),
         )
-        result = _clean_response(text)
-        assert "not included in the source material" not in result
-        assert "talented researcher" in result
+        if last_boundary > 200:
+            text = truncated[:last_boundary + 1]
+        else:
+            # Try to cut at a period at the end
+            last_period = truncated.rfind(".")
+            if last_period > 200:
+                text = truncated[:last_period + 1]
+            else:
+                text = truncated.strip()
+ 
+    # If response is empty after cleaning, return graceful fallback
+    if not text.strip():
+        return "I apologize, but I could not generate a proper response. Please try asking your question in a different way."
+ 
+    return text.strip()
+ 
+ 
+async def _call_hf_api(prompt: str, timeout: float = 45.0) -> str:
+    url = f"https://api-inference.huggingface.co/models/{settings.HF_MODEL_ID}"
+    headers = {"Authorization": f"Bearer {settings.HF_API_TOKEN}"}
+    payload = {
+        "inputs": prompt,
+        "parameters": {
+            "max_new_tokens": 300,
+            "temperature": 0.4,
+            "return_full_text": False,
+        },
+    }
+ 
+    async with httpx.AsyncClient(timeout=timeout) as client:
+        response = await client.post(url, json=payload, headers=headers)
+ 
+        # Handle rate limiting
+        if response.status_code == 429:
+            raise Exception(
+                "Rate limited by HuggingFace API. Please wait a moment and try again."
+            )
+ 
+        # Handle model loading (503) with retry
+        if response.status_code == 503:
+            logger.warning("Model is loading (503), retrying in 5 seconds...")
+            await asyncio.sleep(5)
+            response = await client.post(url, json=payload, headers=headers)
+            if response.status_code != 200:
+                error_detail = response.text[:300]
+                logger.error(
+                    "HF API retry failed with status %d: %s (model: %s)",
+                    response.status_code,
+                    error_detail,
+                    settings.HF_MODEL_ID,
+                )
+                response.raise_for_status()
+        elif response.status_code != 200:
+            # Check if JSON error mentions "loading"
+            try:
+                error_json = response.json()
+                error_msg = str(error_json.get("error", ""))
+                if "loading" in error_msg.lower():
+                    logger.warning("Model is loading (from error message), retrying in 5 seconds...")
+                    await asyncio.sleep(5)
+                    response = await client.post(url, json=payload, headers=headers)
+                    if response.status_code != 200:
+                        error_detail = response.text[:300]
+                        logger.error(
+                            "HF API retry failed with status %d: %s (model: %s)",
+                            response.status_code,
+                            error_detail,
+                            settings.HF_MODEL_ID,
+                        )
+                        response.raise_for_status()
+                else:
+                    error_detail = response.text[:300]
+                    logger.error(
+                        "HF API returned status %d: %s (model: %s)",
+                        response.status_code,
+                        error_detail,
+                        settings.HF_MODEL_ID,
+                    )
+                    response.raise_for_status()
+            except (ValueError, KeyError):
+                error_detail = response.text[:300]
+                logger.error(
+                    "HF API returned status %d: %s (model: %s)",
+                    response.status_code,
+                    error_detail,
+                    settings.HF_MODEL_ID,
+                )
+                response.raise_for_status()
+ 
+        result = response.json()
+ 
+    if isinstance(result, list) and len(result) > 0:
+        generated = result[0].get("generated_text", "").strip()
+        return _clean_response(generated)
+    logger.warning("HF API returned unexpected response format: %s", str(result)[:200])
+    return "I apologize, but I could not generate a response at this time."
+ 
+ 
+def _extract_urls(text: str) -> dict:
+    """Extract labeled URLs from context text."""
+    urls = {}
+    # Match patterns like "LinkedIn - URL" or "GitHub - URL"
+    url_patterns = re.findall(
+        r'(\w[\w\s]*?)\s*[-:]\s*(https?://[^\s,]+)', text
+    )
+    for label, url in url_patterns:
+        urls[label.strip().lower()] = url.strip().rstrip(",.")
+    # Also find standalone URLs
+    standalone = re.findall(r'https?://[^\s,]+', text)
+    for url in standalone:
+        url_clean = url.strip().rstrip(",.")
+        if "linkedin" in url_clean.lower() and "linkedin" not in urls:
+            urls["linkedin"] = url_clean
+        elif "github" in url_clean.lower() and "github" not in urls:
+            urls["github"] = url_clean
+        elif "kaggle" in url_clean.lower() and "kaggle" not in urls:
+            urls["kaggle"] = url_clean
+        elif "scholar" in url_clean.lower() and "scholar" not in urls:
+            urls["scholar"] = url_clean
+    return urls
+ 
+ 
+def _extract_email(text: str) -> Optional[str]:
+    """Extract email address from context text."""
+    match = re.search(r'[\w.+-]+@[\w-]+\.[\w.-]+', text)
+    return match.group(0) if match else None
+ 
+ 
+def _generate_fallback_response(user_message: str, context: str) -> str:
+    """Generate a structured, intelligent response from retrieved context when HF API is not available."""
+    message_lower = user_message.lower().strip()
+ 
+    # Handle greetings ONLY when the entire message is a greeting (not part of a longer question)
+    greeting_words = {"hello", "hi", "hey", "greetings", "howdy", "hola", "yo", "sup", "good morning", "good evening", "good afternoon"}
+    # Strip punctuation for comparison
+    stripped_message = re.sub(r'[^\w\s]', '', message_lower).strip()
+    if stripped_message in greeting_words or stripped_message.startswith(("hi ", "hey ", "hello ")):
+        return (
+            "Hello! I'm Muhammad Junayed's AI assistant. "
+            "I can tell you about his projects, skills, research, and experience. "
+            "What would you like to know?"
+        )
+ 
+    # Detect off-topic questions
+    if _is_off_topic(user_message):
+        return (
+            "I'm specifically designed to answer questions about Muhammad Junayed — "
+            "his skills, projects, research, experience, and background. "
+            "I can't help with general questions outside his portfolio. "
+            "What would you like to know about him?"
+        )
+ 
+    # If no meaningful context, check keyword-based answers first before giving generic response
+    # Handle common keyword-based questions regardless of vector store results
+ 
+    # LinkedIn requests
+    if "linkedin" in message_lower:
+        urls = _extract_urls(context) if context and context != "No specific context available." else {}
+        if "linkedin" in urls:
+            return f"Here is Muhammad Junayed's LinkedIn profile: {urls['linkedin']}"
+        return (
+            "Muhammad Junayed's LinkedIn profile is: "
+            "https://www.linkedin.com/in/muhammad-junayed-ete20/"
+        )
+ 
+    # GitHub requests
+    if "github" in message_lower:
+        urls = _extract_urls(context) if context and context != "No specific context available." else {}
+        if "github" in urls:
+            return f"Here is Muhammad Junayed's GitHub profile: {urls['github']}"
+        return (
+            "Muhammad Junayed's GitHub profile is: "
+            "https://github.com/MD-Junayed000"
+        )
+ 
+    # Kaggle requests
+    if "kaggle" in message_lower:
+        urls = _extract_urls(context) if context and context != "No specific context available." else {}
+        if "kaggle" in urls:
+            return f"Here is Muhammad Junayed's Kaggle profile: {urls['kaggle']}"
+        return (
+            "Muhammad Junayed's Kaggle profile is: "
+            "https://www.kaggle.com/muhammedjunayed"
+        )
+ 
+    # Google Scholar requests
+    if "scholar" in message_lower or "google scholar" in message_lower:
+        urls = _extract_urls(context) if context and context != "No specific context available." else {}
+        if "scholar" in urls:
+            return f"Here is Muhammad Junayed's Google Scholar profile: {urls['scholar']}"
+        return (
+            "Muhammad Junayed's Google Scholar profile is: "
+            "https://scholar.google.com/citations?user=wObQzNsAAAAJ&hl=en"
+        )
+ 
+    # Address/location requests
+    if any(word in message_lower for word in ["address", "location", "live", "based", "home"]) and not any(w in message_lower for w in ["work", "job", "company", "employ"]):
+        # Check context for address info
+        if context and context != "No specific context available.":
+            address_match = re.search(r'address[:\s-]+([^\n,]+)', context, re.IGNORECASE)
+            if address_match:
+                return f"Muhammad Junayed's address is: {address_match.group(1).strip()}"
+        return (
+            "Muhammad Junayed is based in Bangladesh. He is a final-year ETE student at "
+            "Chittagong University of Engineering & Technology (CUET)."
+        )
+ 
+    # Phone requests
+    if any(word in message_lower for word in ["phone", "call", "number", "mobile"]):
+        if context and context != "No specific context available.":
+            phone_match = re.search(r'(?:phone|mobile|contact)[:\s-]+([+\d\s()-]+)', context, re.IGNORECASE)
+            if phone_match:
+                return f"Muhammad Junayed's phone number is: {phone_match.group(1).strip()}"
+        return (
+            "For contact information, please use the contact form on this website or "
+            "reach out via email at mdjunayed573@gmail.com"
+        )
+ 
+    # Email/contact requests
+    if any(word in message_lower for word in ["email", "mail", "contact", "reach", "how to contact"]):
+        return (
+            "You can contact Muhammad Junayed via:\n"
+            "- Email: mdjunayed573@gmail.com\n"
+            "- LinkedIn: https://www.linkedin.com/in/muhammad-junayed-ete20/\n"
+            "- GitHub: https://github.com/MD-Junayed000\n\n"
+            "Or use the contact form on this website!"
+        )
+ 
+    # Achievement/award requests
+    if any(word in message_lower for word in ["achievement", "award", "accomplish", "honor", "recognition"]):
+        if context and context != "No specific context available.":
+            # Try to find achievement-related content in context
+            achievement_sentences = []
+            for sentence in re.split(r'(?<=[.!?])\s+', context):
+                if any(kw in sentence.lower() for kw in ["award", "achiev", "honor", "recogni", "certif", "winner", "first", "best"]):
+                    achievement_sentences.append(sentence.strip())
+            if achievement_sentences:
+                intro = "Here are some of Muhammad Junayed's achievements:\n\n"
+                points = [f"- {s}" for s in achievement_sentences[:5]]
+                return intro + "\n".join(points)
+        return (
+            "Muhammad Junayed's notable achievements include:\n"
+            "- Published research papers at IEEE (ICAEEE 2024) and ACL workshop (BEA 2025)\n"
+            "- B.Sc. thesis on hallucination detection/mitigation in LLMs\n"
+            "- Multiple ML/AI projects including healthcare chatbot and industrial defect recognition\n\n"
+            "Ask about his research or projects for more details!"
+        )
+ 
+    # Thesis requests
+    if any(word in message_lower for word in ["thesis", "research topic", "dissertation"]):
+        return (
+            "Muhammad Junayed's undergraduate thesis is titled 'Closing the Loop on RAG Hallucinations: "
+            "Inference-Time Control via Dual Residual-Stream and FFN Activation Probes.' "
+            "It investigates methods for detecting and mitigating hallucinations in large language models "
+            "during inference. His supervisor is Priyonti Paul Tumpa, Assistant Professor at CUET's ETE department. "
+            "The thesis is currently ongoing."
+        )
+ 
+    # Education/CGPA requests
+    if any(word in message_lower for word in ["cgpa", "gpa", "grade", "education", "degree", "study"]):
+        return (
+            "Muhammad Junayed is pursuing a B.Sc. in Electronics and Telecommunication Engineering "
+            "at Chittagong University of Engineering and Technology (CUET), Bangladesh. "
+            "He started in March 2022 and is currently in his final year."
+        )
+ 
+    # Work/experience requests
+    if any(word in message_lower for word in ["work", "job", "employ", "intern", "company", "experience"]) and not any(w in message_lower for w in ["project", "built", "research", "paper", "publication"]):
+        return (
+            "Muhammad Junayed has worked at:\n"
+            "- Software Engineer Intern at Poridhi.io (cloud-native infrastructure)\n"
+            "- Industrial Trainee at Brain Station 23 PLC (software development)\n\n"
+            "He gained experience in backend engineering, cloud computing, and production software systems."
+        )
+ 
+    # Language requests
+    if any(word in message_lower for word in ["language", "speak", "fluent", "bangla", "bengali", "english"]) and not any(w in message_lower for w in ["programming", "code", "python", "javascript"]):
+        return (
+            "Muhammad Junayed speaks:\n"
+            "- Bangla (native language)\n"
+            "- English (professional proficiency)"
+        )
+ 
+    # Coursework requests
+    if any(word in message_lower for word in ["course", "coursework", "subject", "class"]):
+        return (
+            "Muhammad Junayed's relevant coursework includes:\n"
+            "- Electronics & Communication: Digital Systems, VLSI, Communication Theory\n"
+            "- Signal Processing: DSP, Control Systems\n"
+            "- Computing: Data Structures, OOP, Computer Architecture\n"
+            "- Mathematics: Linear Algebra, Probability, Numerical Methods"
+        )
+ 
+    # If no meaningful context available after keyword checks, return generic response
+    if not context or context == "No specific context available.":
+        return (
+            "I'm Muhammad Junayed's AI portfolio assistant. "
+            "I can help you learn about his projects, skills, research, and background. "
+            "Please ask me something specific!"
+        )
+ 
+    # Extract structured information from context
+    urls = _extract_urls(context)
+    email = _extract_email(context)
+ 
+    # For general questions, parse context into a structured answer
+    return _build_structured_answer(message_lower, context)
+ 
+ 
+def _build_structured_answer(question: str, context: str) -> str:
+    """Build a structured, readable answer from context based on the question type."""
+    # Split context into individual chunks for analysis
+    chunks = [c.strip() for c in context.split("\n\n") if c.strip()]
+ 
+    # Determine question category and format accordingly
+    if any(word in question for word in ["skill", "tech", "proficient", "know", "stack"]):
+        return _format_skills_answer(chunks)
+    elif any(word in question for word in ["project", "built", "made", "portfolio", "work"]):
+        return _format_projects_answer(chunks)
+    elif any(word in question for word in ["research", "paper", "publication", "thesis"]):
+        return _format_research_answer(chunks)
+    elif any(word in question for word in ["achievement", "award", "accomplish", "honor", "recognition"]):
+        return _format_achievements_answer(chunks)
+    elif any(word in question for word in ["who", "about", "tell me", "introduce", "background"]):
+        return _format_about_answer(chunks)
+    elif any(word in question for word in ["experience", "job", "intern", "company"]):
+        return _format_experience_answer(chunks)
+    else:
+        # General question: present the most relevant context clearly
+        return _format_general_answer(chunks)
+ 
+ 
+def _format_skills_answer(chunks: list) -> str:
+    """Format a skills-focused answer from context chunks."""
+    skill_info = []
+    for chunk in chunks:
+        if any(kw in chunk.lower() for kw in ["skill", "proficient", "expertise", "uses", "include"]):
+            skill_info.append(chunk)
+ 
+    if skill_info:
+        intro = "Here are Muhammad Junayed's technical skills:\n\n"
+        # Extract skill mentions and present them
+        combined = " ".join(skill_info)
+        sentences = [s.strip() for s in re.split(r'(?<=[.!])\s+', combined) if s.strip()]
+        points = [f"- {s}" for s in sentences[:6]]
+        return intro + "\n".join(points)
+ 
+    # Fallback: use whatever context we have
+    return _format_general_answer(chunks)
+ 
+ 
+def _format_projects_answer(chunks: list) -> str:
+    """Format a projects-focused answer from context chunks."""
+    project_info = []
+    for chunk in chunks:
+        if any(kw in chunk.lower() for kw in ["project", "built", "developed", "arobot", "uber", "bistro"]):
+            project_info.append(chunk)
+ 
+    if project_info:
+        intro = "Here are some of Muhammad Junayed's notable projects:\n\n"
+        combined = " ".join(project_info)
+        # Try to find individual project mentions
+        projects = re.findall(r'([A-Z][\w\s-]+?)\s*\(([^)]+)\)', combined)
+        if projects:
+            points = [f"- **{name.strip()}**: {desc.strip()}" for name, desc in projects[:6]]
+            return intro + "\n".join(points)
+        # Fallback: present as sentences
+        sentences = [s.strip() for s in re.split(r'(?<=[.!])\s+', combined) if s.strip()]
+        points = [f"- {s}" for s in sentences[:6]]
+        return intro + "\n".join(points)
+ 
+    return _format_general_answer(chunks)
+ 
+ 
+def _format_research_answer(chunks: list) -> str:
+    """Format a research-focused answer from context chunks."""
+    research_info = []
+    for chunk in chunks:
+        if any(kw in chunk.lower() for kw in ["research", "paper", "thesis", "ieee", "acl", "conference"]):
+            research_info.append(chunk)
+ 
+    if research_info:
+        intro = "Here is Muhammad Junayed's research work:\n\n"
+        combined = " ".join(research_info)
+        sentences = [s.strip() for s in re.split(r'(?<=[.!])\s+', combined) if s.strip()]
+        points = [f"- {s}" for s in sentences[:5]]
+        return intro + "\n".join(points)
+ 
+    return _format_general_answer(chunks)
+ 
+ 
+def _format_achievements_answer(chunks: list) -> str:
+    """Format an achievements-focused answer from context chunks."""
+    achievement_info = []
+    for chunk in chunks:
+        if any(kw in chunk.lower() for kw in ["award", "achiev", "honor", "recogni", "certif", "winner", "first", "best"]):
+            achievement_info.append(chunk)
+ 
+    if achievement_info:
+        intro = "Here are some of Muhammad Junayed's achievements:\n\n"
+        combined = " ".join(achievement_info)
+        sentences = [s.strip() for s in re.split(r'(?<=[.!?])\s+', combined) if s.strip()]
+        points = [f"- {s}" for s in sentences[:6]]
+        return intro + "\n".join(points)
+ 
+    return _format_general_answer(chunks)
+ 
+ 
+def _format_about_answer(chunks: list) -> str:
+    """Format an about/introduction answer from context chunks."""
+    # Prioritize chunks about the person
+    about_info = []
+    for chunk in chunks:
+        if any(kw in chunk.lower() for kw in ["muhammad junayed", "student", "specializ", "enthusiast"]):
+            about_info.append(chunk)
+ 
+    if about_info:
+        # Use the first relevant chunk as a direct intro, clean it up
+        intro = about_info[0]
+        # Truncate at sentence boundary
+        sentences = [s.strip() for s in re.split(r'(?<=[.!])\s+', intro) if s.strip()]
+        return " ".join(sentences[:4])
+ 
+    return _format_general_answer(chunks)
+ 
+ 
+def _format_experience_answer(chunks: list) -> str:
+    """Format an experience answer."""
+    exp_info = []
+    for chunk in chunks:
+        if any(kw in chunk.lower() for kw in ["experience", "work", "intern", "company", "role"]):
+            exp_info.append(chunk)
+ 
+    if exp_info:
+        combined = " ".join(exp_info)
+        sentences = [s.strip() for s in re.split(r'(?<=[.!])\s+', combined) if s.strip()]
+        return " ".join(sentences[:5])
+ 
+    # If no specific experience info found, say so
+    return (
+        "I don't have detailed work experience information in my current knowledge base. "
+        "Muhammad Junayed is a final-year ETE student at CUET focused on AI engineering, "
+        "computer vision, and cloud-native ML systems. Feel free to ask about his projects or skills!"
+    )
+ 
+ 
+def _format_general_answer(chunks: list) -> str:
+    """Format a general answer from context, presenting it as readable sentences."""
+    combined = " ".join(chunks)
+    # Clean up excessive whitespace
+    combined = re.sub(r'\s+', ' ', combined).strip()
+ 
+    # Truncate at sentence boundary
+    if len(combined) > 600:
+        truncated = combined[:600]
+        last_period = max(
+            truncated.rfind(". "),
+            truncated.rfind("! "),
+            truncated.rfind("? "),
+        )
+        if last_period > 150:
+            combined = truncated[:last_period + 1]
+        else:
+            last_space = truncated.rfind(" ")
+            if last_space > 150:
+                combined = truncated[:last_space] + "."
+            else:
+                combined = truncated + "..."
+ 
+    return combined
