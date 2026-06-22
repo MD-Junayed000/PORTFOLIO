@@ -6,22 +6,22 @@ import os
 import uuid
 from collections import Counter
 from typing import Dict, List, Optional, Tuple
-
+ 
 import chromadb
 from PyPDF2 import PdfReader
-
+ 
 from config import settings
-
+ 
 logger = logging.getLogger(__name__)
-
-
+ 
+ 
 _client: Optional[chromadb.ClientAPI] = None
 _collection = None
-
+ 
 # Global BM25 index instance
 _bm25_index: Optional["SimpleBM25"] = None
-
-
+ 
+ 
 # --- Entity type mapping based on section numbers ---
 SECTION_ENTITY_MAP = {
     "1": "profile",
@@ -38,7 +38,7 @@ SECTION_ENTITY_MAP = {
     "12": "award",
     "13": "language",
 }
-
+ 
 # Section relevance mapping for query boosting
 QUERY_SECTION_BOOST = {
     "project": ["10"],
@@ -51,18 +51,18 @@ QUERY_SECTION_BOOST = {
     "profile": ["1", "2"],
     "extracurricular": ["11"],
 }
-
-
+ 
+ 
 class SimpleBM25:
     """Simple BM25 implementation for keyword search - no external dependencies."""
-
+ 
     def __init__(self):
         self.docs: List[List[str]] = []
         self.doc_ids: List[str] = []
         self.avg_dl: float = 0
         self.doc_count: int = 0
         self.idf: Dict[str, float] = {}
-
+ 
     def add_documents(self, documents: List[str], doc_ids: List[str] = None):
         """Add documents to the BM25 index."""
         for i, doc in enumerate(documents):
@@ -75,11 +75,11 @@ class SimpleBM25:
         self.doc_count = len(self.docs)
         self.avg_dl = sum(len(d) for d in self.docs) / max(self.doc_count, 1)
         self._compute_idf()
-
+ 
     def _tokenize(self, text: str) -> List[str]:
         """Tokenize text into lowercase words (min 2 chars)."""
         return re.findall(r'\b[a-zA-Z]{2,}\b', text.lower())
-
+ 
     def _compute_idf(self):
         """Compute inverse document frequency for all terms."""
         df: Counter = Counter()
@@ -92,7 +92,7 @@ class SimpleBM25:
             self.idf[term] = math.log(
                 (self.doc_count - freq + 0.5) / (freq + 0.5) + 1
             )
-
+ 
     def search(self, query: str, top_k: int = 5) -> List[Tuple[int, float]]:
         """Search for documents matching query. Returns list of (index, score)."""
         query_tokens = self._tokenize(query)
@@ -111,7 +111,7 @@ class SimpleBM25:
             scores.append((idx, score))
         scores.sort(key=lambda x: x[1], reverse=True)
         return scores[:top_k]
-
+ 
     def clear(self):
         """Clear all documents from the index."""
         self.docs = []
@@ -119,16 +119,16 @@ class SimpleBM25:
         self.avg_dl = 0
         self.doc_count = 0
         self.idf = {}
-
-
+ 
+ 
 def get_bm25_index() -> SimpleBM25:
     """Get or create the global BM25 index."""
     global _bm25_index
     if _bm25_index is None:
         _bm25_index = SimpleBM25()
     return _bm25_index
-
-
+ 
+ 
 def get_chroma_client():
     global _client
     if _client is None:
@@ -138,8 +138,8 @@ def get_chroma_client():
             settings=chromadb.Settings(anonymized_telemetry=False),
         )
     return _client
-
-
+ 
+ 
 def initialize_collection():
     global _collection
     try:
@@ -160,15 +160,15 @@ def initialize_collection():
             metadata={"hnsw:space": "cosine"},
         )
     return _collection
-
-
+ 
+ 
 def get_collection():
     global _collection
     if _collection is None:
         initialize_collection()
     return _collection
-
-
+ 
+ 
 def extract_keywords(text: str) -> str:
     """Extract top keywords from text for metadata storage."""
     stop_words = {
@@ -194,15 +194,15 @@ def extract_keywords(text: str) -> str:
     sorted_words = sorted(word_freq.items(), key=lambda x: x[1], reverse=True)
     top_keywords = [w for w, _ in sorted_words[:10]]
     return ",".join(top_keywords)
-
-
+ 
+ 
 def _get_entity_type(section_number: str) -> str:
     """Map a section number to its entity type."""
     # Get the top-level section number
     top_level = section_number.split(".")[0]
     return SECTION_ENTITY_MAP.get(top_level, "profile")
-
-
+ 
+ 
 def _clean_pdf_text(text: str) -> str:
     """Remove repeated page headers and page markers from PDF text."""
     # Remove "Page X" markers (standalone on a line or at boundaries)
@@ -217,18 +217,18 @@ def _clean_pdf_text(text: str) -> str:
     # Clean up excessive blank lines
     text = re.sub(r'\n{3,}', '\n\n', text)
     return text.strip()
-
-
+ 
+ 
 def _parse_sections(text: str) -> List[Dict]:
     """Parse PDF text into sections based on numbered headings.
-
+ 
     Returns a list of dicts with keys: heading, section_number, subsection, text, entity_type
     """
     # Pattern to match section headings like "1. Professional Profile" or "10.3 Some Project"
     heading_pattern = re.compile(r'^(\d+(?:\.\d+)*)\s+(.+)$', re.MULTILINE)
-
+ 
     matches = list(heading_pattern.finditer(text))
-
+ 
     if not matches:
         # No headings found, return entire text as one section
         return [{
@@ -238,25 +238,25 @@ def _parse_sections(text: str) -> List[Dict]:
             "text": text.strip(),
             "entity_type": "profile",
         }]
-
+ 
     sections = []
     for i, match in enumerate(matches):
         section_number = match.group(1)
         heading_title = match.group(2).strip()
         start = match.end()
         end = matches[i + 1].start() if i + 1 < len(matches) else len(text)
-
+ 
         section_text = text[start:end].strip()
-
+ 
         # Determine subsection
         subsection = None
         if "." in section_number:
             # It's a subsection (e.g., "3.1")
             parts = section_number.split(".")
             subsection = heading_title
-
+ 
         entity_type = _get_entity_type(section_number)
-
+ 
         sections.append({
             "heading": heading_title,
             "section_number": section_number,
@@ -264,44 +264,44 @@ def _parse_sections(text: str) -> List[Dict]:
             "text": section_text,
             "entity_type": entity_type,
         })
-
+ 
     return sections
-
-
+ 
+ 
 def _split_section_into_chunks(
     section: Dict,
     max_chars: int = 2500,
     overlap_chars: int = 240,
 ) -> List[Dict]:
     """Split a section into chunks if it exceeds max_chars.
-
+ 
     Splits at paragraph boundaries within the section.
     Target: 500-700 tokens (~2000-2800 chars).
     Overlap: 60 tokens (~240 chars).
     """
     text = section["text"]
-
+ 
     if len(text) <= max_chars:
         # Section fits in one chunk
         return [section]
-
+ 
     # Split at paragraph boundaries (double newline or single newline followed by content)
     paragraphs = re.split(r'\n\s*\n', text)
-
+ 
     chunks = []
     current_chunk_text = ""
-
+ 
     for para in paragraphs:
         para = para.strip()
         if not para:
             continue
-
+ 
         if current_chunk_text and len(current_chunk_text) + len(para) + 2 > max_chars:
             # Save current chunk
             chunk_data = section.copy()
             chunk_data["text"] = current_chunk_text.strip()
             chunks.append(chunk_data)
-
+ 
             # Start new chunk with overlap from end of previous
             if len(current_chunk_text) > overlap_chars:
                 overlap_text = current_chunk_text[-overlap_chars:]
@@ -317,7 +317,7 @@ def _split_section_into_chunks(
                 current_chunk_text += "\n\n" + para
             else:
                 current_chunk_text = para
-
+ 
     # Handle remaining text
     if current_chunk_text.strip():
         # If remaining text is very short, merge with last chunk if possible
@@ -327,30 +327,30 @@ def _split_section_into_chunks(
             chunk_data = section.copy()
             chunk_data["text"] = current_chunk_text.strip()
             chunks.append(chunk_data)
-
+ 
     return chunks if chunks else [section]
-
-
+ 
+ 
 def chunk_pdf_by_headings(text: str) -> List[Dict]:
     """Main chunking function: heading-aware semantic chunking for the canonical PDF.
-
+ 
     Returns list of dicts with: text, heading, section_number, subsection, entity_type
     """
     # Clean the text first
     cleaned = _clean_pdf_text(text)
-
+ 
     # Parse into sections
     sections = _parse_sections(cleaned)
-
+ 
     # Split large sections into smaller chunks
     all_chunks = []
     for section in sections:
         chunks = _split_section_into_chunks(section)
         all_chunks.extend(chunks)
-
+ 
     return all_chunks
-
-
+ 
+ 
 def add_document(text: str, metadata: Dict = None, doc_id: str = None) -> str:
     """Add a single document to the vector store and BM25 index."""
     collection = get_collection()
@@ -370,8 +370,8 @@ def add_document(text: str, metadata: Dict = None, doc_id: str = None) -> str:
     bm25 = get_bm25_index()
     bm25.add_documents([text], [doc_id])
     return doc_id
-
-
+ 
+ 
 def add_documents_batch(
     texts: List[str],
     metadatas: List[Dict],
@@ -380,7 +380,7 @@ def add_documents_batch(
     """Add multiple documents to both ChromaDB and BM25 index one at a time to keep memory low."""
     collection = get_collection()
     bm25 = get_bm25_index()
-
+ 
     for i in range(len(texts)):
         meta = metadatas[i]
         if "keywords" not in meta:
@@ -391,19 +391,19 @@ def add_documents_batch(
             metadatas=[meta],
             ids=[doc_ids[i]],
         )
-
+ 
     # Add all to BM25 (lightweight - just stores tokenized words)
     bm25.add_documents(texts, doc_ids)
-
+ 
     return doc_ids
-
-
+ 
+ 
 def _get_section_boost(question: str, chunk_metadata: Dict) -> float:
     """Calculate section relevance boost based on question content and chunk section."""
     question_lower = question.lower()
     section_number = chunk_metadata.get("section_number", "")
     top_section = section_number.split(".")[0] if section_number else ""
-
+ 
     boost = 0.0
     # Check if question mentions category keywords that map to sections
     boost_keywords = {
@@ -414,20 +414,20 @@ def _get_section_boost(question: str, chunk_metadata: Dict) -> float:
         "research": ["research", "paper", "publication", "thesis", "conference", "journal"],
         "award": ["award", "achievement", "honor", "prize", "recognition", "winner"],
         "language": ["language", "speak", "fluent", "bangla", "english"],
-        "profile": ["who", "about", "introduce", "summary", "overview"],
+        "profile": ["who", "about", "introduce", "summary", "overview", "junayed", "muhammad", "tell me about", "background", "himself"],
         "extracurricular": ["extracurricular", "volunteer", "club", "activity", "organization"],
     }
-
+ 
     for category, keywords in boost_keywords.items():
         if any(kw in question_lower for kw in keywords):
             relevant_sections = QUERY_SECTION_BOOST.get(category, [])
             if top_section in relevant_sections:
-                boost += 2.0
+                boost += 5.0
                 break
-
+ 
     return boost
-
-
+ 
+ 
 def _rerank_results(
     results: List[Dict],
     question: str,
@@ -437,21 +437,21 @@ def _rerank_results(
     scored = []
     for result in results:
         doc_id = result.get("doc_id", "")
-
+ 
         # (1) Vector similarity score (convert distance to similarity)
         # ChromaDB cosine distance: 0 = identical, 2 = opposite
         distance = result.get("distance", 1.0)
         vector_score = max(0, 1.0 - distance / 2.0)  # Normalize to 0-1
-
+ 
         # (2) BM25 keyword score (already computed)
         bm25_score = bm25_scores.get(doc_id, 0.0)
         # Normalize BM25 score relative to max
         max_bm25 = max(bm25_scores.values()) if bm25_scores else 1.0
         normalized_bm25 = bm25_score / max(max_bm25, 0.001)
-
+ 
         # (3) Section relevance boost
         section_boost = _get_section_boost(question, result.get("metadata", {}))
-
+ 
         # Combined score: weighted sum
         combined_score = (
             vector_score * 0.4
@@ -460,20 +460,20 @@ def _rerank_results(
         )
         result["combined_score"] = combined_score
         scored.append((combined_score, result))
-
+ 
     scored.sort(key=lambda x: x[0], reverse=True)
     return [item for _, item in scored]
-
-
+ 
+ 
 def query(question: str, n_results: int = 5) -> List[Dict]:
     """Hybrid retrieval: ChromaDB vector search + BM25 keyword search, merged and re-ranked.
-
+ 
     Returns top n_results chunks with metadata.
     """
     collection = get_collection()
     if collection.count() == 0:
         return []
-
+ 
     # (1) ChromaDB vector search - fetch more candidates for re-ranking
     fetch_count = min(n_results * 3, collection.count())
     try:
@@ -485,12 +485,12 @@ def query(question: str, n_results: int = 5) -> List[Dict]:
     except Exception as e:
         logger.error("ChromaDB query failed: %s", str(e))
         return []
-
+ 
     documents = results.get("documents", [[]])[0]
     metadatas = results.get("metadatas", [[]])[0]
     distances = results.get("distances", [[]])[0]
     ids = results.get("ids", [[]])[0]
-
+ 
     # Build a map of vector results
     vector_results: Dict[str, Dict] = {}
     for doc, meta, dist, doc_id in zip(documents, metadatas, distances, ids):
@@ -500,7 +500,7 @@ def query(question: str, n_results: int = 5) -> List[Dict]:
             "distance": dist,
             "doc_id": doc_id,
         }
-
+ 
     # (2) BM25 keyword search
     bm25 = get_bm25_index()
     bm25_scores: Dict[str, float] = {}
@@ -509,11 +509,11 @@ def query(question: str, n_results: int = 5) -> List[Dict]:
         for idx, score in bm25_results:
             if idx < len(bm25.doc_ids):
                 bm25_scores[bm25.doc_ids[idx]] = score
-
+ 
     # (3) Merge: combine vector results with any BM25-only results
     # Start with vector results (which have distance info)
     merged: Dict[str, Dict] = dict(vector_results)
-
+ 
     # Add BM25 results that are not in vector results
     for doc_id, score in bm25_scores.items():
         if doc_id not in merged:
@@ -532,10 +532,10 @@ def query(question: str, n_results: int = 5) -> List[Dict]:
                     }
             except Exception:
                 pass
-
+ 
     # (4) Re-rank all candidates
     all_candidates = list(merged.values())
-
+ 
     # Filter by relevance threshold
     RELEVANCE_THRESHOLD = 1.5
     filtered = [
@@ -543,29 +543,29 @@ def query(question: str, n_results: int = 5) -> List[Dict]:
         if item["distance"] <= RELEVANCE_THRESHOLD
         or bm25_scores.get(item["doc_id"], 0) > 0
     ]
-
+ 
     if not filtered:
         filtered = all_candidates
-
+ 
     reranked = _rerank_results(filtered, question, bm25_scores)
     return reranked[:n_results]
-
-
+ 
+ 
 def delete_document(doc_id: str):
     """Delete a document from the vector store."""
     collection = get_collection()
     collection.delete(ids=[doc_id])
-
-
+ 
+ 
 def chunk_text(text: str, chunk_size: int = 800, overlap: int = 150) -> List[str]:
     """Legacy: Split text into overlapping chunks using sentence-based splitting.
-
+ 
     Kept for backward compatibility with manual document uploads.
     """
     sentences = re.split(r'(?<=[.!?])\s+', text)
     chunks = []
     current_chunk = ""
-
+ 
     for sentence in sentences:
         if current_chunk and len(current_chunk) + len(sentence) + 1 > chunk_size:
             if current_chunk.strip():
@@ -583,13 +583,13 @@ def chunk_text(text: str, chunk_size: int = 800, overlap: int = 150) -> List[str
                 current_chunk += " " + sentence
             else:
                 current_chunk = sentence
-
+ 
     if current_chunk.strip():
         chunks.append(current_chunk.strip())
-
+ 
     return chunks
-
-
+ 
+ 
 def process_pdf(file_path: str) -> List[str]:
     """Extract text from PDF and add chunks to vector store using heading-aware chunking."""
     reader = PdfReader(file_path)
@@ -598,13 +598,13 @@ def process_pdf(file_path: str) -> List[str]:
         page_text = page.extract_text()
         if page_text:
             full_text += page_text + "\n"
-
+ 
     if not full_text.strip():
         return []
-
+ 
     # Use heading-aware chunking for structured PDFs
     chunks = chunk_pdf_by_headings(full_text)
-
+ 
     if not chunks or len(chunks) < 3:
         # Fallback to legacy chunking if heading parsing fails
         text_chunks = chunk_text(full_text)
@@ -618,13 +618,13 @@ def process_pdf(file_path: str) -> List[str]:
             )
             doc_ids.append(doc_id)
         return doc_ids
-
+ 
     # Add all chunks with rich metadata
     texts = []
     metadatas = []
     doc_ids = []
     document_id = "muhammad_junayed_complete_rag_profile"
-
+ 
     for i, chunk in enumerate(chunks):
         texts.append(chunk["text"])
         meta = {
@@ -639,7 +639,7 @@ def process_pdf(file_path: str) -> List[str]:
             meta["subsection"] = chunk["subsection"]
         metadatas.append(meta)
         doc_ids.append(f"{document_id}_chunk_{i}")
-
+ 
     add_documents_batch(texts, metadatas, doc_ids)
     gc.collect()
     logger.info(
