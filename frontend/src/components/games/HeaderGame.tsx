@@ -1,6 +1,7 @@
 "use client";
 
 import { useRef, useEffect, useState, useCallback } from "react";
+import { ClaudeCode } from "@lobehub/icons";
 
 interface Entity {
   x: number;
@@ -36,29 +37,32 @@ const GRAVITY = 0.55;
 const JUMP_FORCE = -10.5;
 const GROUND_OFFSET = 30;
 const GAME_SPEED = 3;
+const PLAYER_SIZE = 30;
 
 export default function HeaderGame() {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const animRef = useRef<number>(0);
-  const playerRef = useRef<Entity>({ x: 40, y: 0, vy: 0, width: 30, height: 30 });
+  const playerRef = useRef<Entity>({ x: 40, y: 0, vy: 0, width: PLAYER_SIZE, height: PLAYER_SIZE });
   const obstaclesRef = useRef<Obstacle[]>([]);
   const frameRef = useRef(0);
   const scoreRef = useRef(0);
   const gameOverRef = useRef(false);
   const [score, setScore] = useState(0);
   const [gameOver, setGameOver] = useState(false);
+  const [playerPos, setPlayerPos] = useState({ x: 40, y: 0 });
 
   const resetGame = useCallback(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
     const ground = canvas.height - GROUND_OFFSET;
-    playerRef.current = { x: 40, y: ground - 30, vy: 0, width: 30, height: 30 };
+    playerRef.current = { x: 40, y: ground - PLAYER_SIZE, vy: 0, width: PLAYER_SIZE, height: PLAYER_SIZE };
     obstaclesRef.current = [];
     frameRef.current = 0;
     scoreRef.current = 0;
     gameOverRef.current = false;
     setScore(0);
     setGameOver(false);
+    setPlayerPos({ x: 40, y: ground - PLAYER_SIZE });
   }, []);
 
   const jump = useCallback(() => {
@@ -120,49 +124,8 @@ export default function HeaderGame() {
     window.addEventListener("resize", resizeCanvas);
 
     const ground = canvas.height - GROUND_OFFSET;
-    playerRef.current.y = ground - 30;
-
-    const drawPlayer = (ctx: CanvasRenderingContext2D, x: number, y: number, width: number, height: number) => {
-      // Claude logo-inspired player: recognizable orange circle/face with subtle smile
-      const cx = x + width / 2;
-      const cy = y + height / 2;
-      const radius = width / 2;
-
-      // Outer circle - warm orange/coral
-      ctx.beginPath();
-      ctx.arc(cx, cy, radius, 0, Math.PI * 2);
-      ctx.fillStyle = "#E8733A";
-      ctx.fill();
-
-      // Inner lighter circle for depth
-      ctx.beginPath();
-      ctx.arc(cx, cy, radius * 0.82, 0, Math.PI * 2);
-      ctx.fillStyle = "#F29B68";
-      ctx.fill();
-
-      // Core warm highlight
-      ctx.beginPath();
-      ctx.arc(cx, cy - radius * 0.1, radius * 0.55, 0, Math.PI * 2);
-      ctx.fillStyle = "#F4B887";
-      ctx.fill();
-
-      // Eyes - two small dark dots
-      ctx.fillStyle = "#5C3317";
-      ctx.beginPath();
-      ctx.arc(cx - radius * 0.25, cy - radius * 0.15, radius * 0.09, 0, Math.PI * 2);
-      ctx.fill();
-      ctx.beginPath();
-      ctx.arc(cx + radius * 0.25, cy - radius * 0.15, radius * 0.09, 0, Math.PI * 2);
-      ctx.fill();
-
-      // Subtle smile - a gentle arc
-      ctx.beginPath();
-      ctx.arc(cx, cy + radius * 0.05, radius * 0.3, 0.15 * Math.PI, 0.85 * Math.PI, false);
-      ctx.strokeStyle = "#5C3317";
-      ctx.lineWidth = 1.5;
-      ctx.lineCap = "round";
-      ctx.stroke();
-    };
+    playerRef.current.y = ground - PLAYER_SIZE;
+    setPlayerPos({ x: 40, y: ground - PLAYER_SIZE });
 
     const drawEnemy = (ctx: CanvasRenderingContext2D, obs: Obstacle) => {
       // Rounded rectangle with brand color
@@ -189,6 +152,8 @@ export default function HeaderGame() {
       ctx.fillText(obs.label, obs.x + obs.width / 2, obs.y + obs.height / 2);
     };
 
+    let lastPlayerY = playerRef.current.y;
+
     const gameLoop = () => {
       if (!canvas || !ctx) return;
       const { width, height } = canvas;
@@ -212,6 +177,12 @@ export default function HeaderGame() {
         if (player.y >= groundY - player.height) {
           player.y = groundY - player.height;
           player.vy = 0;
+        }
+
+        // Update player position for the overlay icon (only when changed to avoid excessive re-renders)
+        if (Math.abs(player.y - lastPlayerY) > 0.5) {
+          lastPlayerY = player.y;
+          setPlayerPos({ x: player.x, y: player.y });
         }
 
         // Spawn obstacles
@@ -258,9 +229,6 @@ export default function HeaderGame() {
           }
         }
 
-        // Draw player (Claude-inspired icon)
-        drawPlayer(ctx, player.x, player.y, player.width, player.height);
-
         // Draw obstacles (tech brand enemies)
         for (const obs of obstaclesRef.current) {
           drawEnemy(ctx, obs);
@@ -301,6 +269,20 @@ export default function HeaderGame() {
       aria-label="Jump game - click or press spacebar to jump"
     >
       <canvas ref={canvasRef} className="w-full h-full block" />
+      {/* ClaudeCode.Color icon rendered as HTML overlay at player position */}
+      {!gameOver && (
+        <div
+          className="absolute pointer-events-none"
+          style={{
+            left: `${playerPos.x}px`,
+            top: `${playerPos.y}px`,
+            width: `${PLAYER_SIZE}px`,
+            height: `${PLAYER_SIZE}px`,
+          }}
+        >
+          <ClaudeCode.Color size={PLAYER_SIZE} />
+        </div>
+      )}
       {!gameOver && score === 0 && (
         <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
           <span className="text-xs text-muted/60">Click or press Space to jump!</span>
