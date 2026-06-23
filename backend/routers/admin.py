@@ -666,7 +666,38 @@ async def debug_process_pdf(
         "traceback_tail": None,
         "parsed_chunks": None,
         "doc_ids": None,
+        "diagnostics": {},
     }
+
+    # Environment diagnostics — wrapped in try/except so a config typo cannot
+    # itself turn this debug endpoint into a 500.
+    try:
+        result["diagnostics"] = {
+            "hf_token_set": bool(settings.HF_API_TOKEN),
+            "hf_model_id": settings.HF_MODEL_ID,
+            "hf_embedding_model_id": settings.HF_EMBEDDING_MODEL_ID,
+            "database_url_set": bool(settings.DATABASE_URL),
+            "cloudinary_cloud_name_set": bool(settings.CLOUDINARY_CLOUD_NAME),
+            "max_pdf_size_mb": settings.MAX_PDF_SIZE // (1024 * 1024),
+            "embedding_dim": settings.EMBEDDING_DIM,
+        }
+    except Exception as diag_exc:
+        result["diagnostics"] = {"error": f"settings load failed: {diag_exc}"}
+
+    # Probe Neon reachability (1s timeout). Surfaces pool/DNS failures in the
+    # same response so we don't have to grep Render logs separately.
+    try:
+        from database import engine
+        from sqlalchemy import text as _text
+
+        async with engine.connect() as conn:
+            await conn.execute(_text("SELECT 1"))
+        result["diagnostics"]["db_reachable"] = True
+    except Exception as db_exc:
+        result["diagnostics"]["db_reachable"] = False
+        result["diagnostics"]["db_error"] = (
+            f"{type(db_exc).__name__}: {db_exc}"
+        )
     try:
         with tempfile.NamedTemporaryFile(
             suffix=".pdf", delete=False
@@ -708,12 +739,18 @@ async def debug_process_pdf(
             return result
         except Exception as exc:
             tb = traceback.format_exc().splitlines()
+            # HTTPException carries a status_code that the regular /upload-pdf
+            # route turns into the response. Surface it here too so we can
+            # distinguish a 502 (Cloudinary) from a 504 (HF timeout) from a
+            # bare 500 (DB / parse) without redeploying.
+            http_status = getattr(exc, "status_code", None)
             result.update({
                 "checkpoint": (
                     checkpoints[-1] if checkpoints else "before_pdf_parsed"
                 ),
                 "exception_type": type(exc).__name__,
                 "exception_message": str(exc),
+                "http_status": http_status,
                 "traceback_tail": tb[-12:],
             })
             # Also persist to the real logger so Render's normal log stream
