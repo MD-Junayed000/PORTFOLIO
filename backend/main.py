@@ -22,11 +22,10 @@ def _run_alembic_upgrade() -> None:
     """Run ``alembic upgrade head`` programmatically against the live engine.
 
     Render-managed Postgres (Neon) is external to Render, so tables are NOT
-    created automatically. The ``preDeployCommand`` in render.yaml is not
-    always honored (e.g. when the service was created manually in the
-    dashboard). Running migrations in the app lifespan guarantees the
-    schema is in sync with the code on every deploy, regardless of how
-    the Render service is configured.
+    created automatically. Running migrations in the app lifespan guarantees
+    the schema is in sync with the code on every deploy, regardless of how
+    the Render service is configured (manual dashboard service or
+    render.yaml-managed).
     """
     if not _is_postgres:
         # Local sqlite fallback (dev / tests) skips alembic; the test suite

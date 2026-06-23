@@ -4,9 +4,9 @@ services:
     runtime: python
     rootDir: backend
     buildCommand: pip install -r requirements.txt
-    # releaseCommand runs migrations before each deploy so the Neon schema
-    # is always in sync with the code.
-    preDeployCommand: alembic upgrade head
+    # Migrations are run by the FastAPI lifespan (see backend/main.py), so we
+    # do not declare a preDeployCommand. Render-managed Postgres (Neon) is
+    # external to Render, so tables are not auto-created.
     startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT
     healthCheckPath: /api/health
     envVars:
