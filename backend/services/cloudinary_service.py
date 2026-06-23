@@ -153,9 +153,9 @@ def delete_asset(public_id: str, resource_type: str = "image") -> bool:
 def extract_public_id_from_url(url: Optional[str], resource_type: str = "raw") -> Optional[str]:
     """Recover the Cloudinary ``public_id`` from a stored ``secure_url``.
 
-    We strip the version segment (``v1234567890/``), the file extension
-    and the resource-type folder prefix so the result is exactly what the
-    Cloudinary SDK needs to sign a new download URL.
+    We strip the version segment (``v1234567890/``) and the file extension
+    so the result is exactly what the Cloudinary SDK needs to sign a new
+    download URL.
 
     Example raw URL:
         https://res.cloudinary.com/<cloud>/raw/upload/v123/portfolio/pdfs/abc.pdf

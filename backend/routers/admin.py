@@ -43,6 +43,7 @@ from services.cloudinary_service import (
     upload_image,
     upload_pdf,
     delete_asset,
+    extract_public_id_from_url,
 )
 from config import settings
 
@@ -299,6 +300,49 @@ async def create_certificate(
     await db.commit()
     await db.refresh(certificate)
     return certificate
+
+
+@router.post("/backfill-public-ids")
+async def backfill_public_ids(
+    db: AsyncSession = Depends(get_db),
+    admin: dict = Depends(get_current_admin),
+):
+    """One-shot recovery for legacy rows uploaded before we tracked public_id.
+
+    Walks every certificate + the about-content CV row and, for any row
+    where ``*_public_id`` is NULL but a Cloudinary secure_url is stored,
+    parses the public_id out of the secure_url and writes it back.
+
+    Run once after deploy. Safe to re-run: rows that already have a
+    public_id are left alone.
+    """
+    fixed: list[str] = []
+
+    cert_result = await db.execute(select(Certificate))
+    for cert in cert_result.scalars().all():
+        if cert.file_public_id:
+            continue
+        if not cert.file_path:
+            continue
+        parsed = extract_public_id_from_url(cert.file_path, resource_type="raw")
+        if not parsed:
+            # Non-Cloudinary URL (legacy local upload). Skip — the proxy
+            # rewrite will just return the original path unchanged.
+            continue
+        cert.file_public_id = parsed
+        fixed.append(f"cert:{cert.id}")
+
+    about_result = await db.execute(select(AboutContent))
+    about = about_result.scalar_one_or_none()
+    if about and not about.cv_public_id and about.cv_file_path:
+        parsed = extract_public_id_from_url(about.cv_file_path, resource_type="raw")
+        if parsed:
+            about.cv_public_id = parsed
+            fixed.append("about:cv")
+
+    if fixed:
+        await db.commit()
+    return {"fixed": fixed, "count": len(fixed)}
 
 
 @router.put("/certificates/{cert_id}", response_model=CertificateResponse)

@@ -38,34 +38,34 @@ router = APIRouter(prefix="/api", tags=["public"])
 
 
 def _proxy_url(public_id: str) -> str:
-    """Build an internal proxy URL the browser can hit without auth."""
-    # The frontend prepends the API base when the path starts with "/api/"
-    # (it does for /uploads/... fallback paths), but in this case we want
-    # the absolute URL because the proxy may live on a different origin
-    # in the future. Keep it relative for now -- the React layer resolves
-    # it via the same axios baseURL.
-    return f"/api/files/raw?public_id={public_id}"
+    """Build an internal proxy URL the browser can hit without auth.
 
-
-def _rewrite_raw_url_to_proxy(url: Optional[str]) -> Optional[str]:
-    """Rewrite a Cloudinary ``raw`` secure_url to use our public proxy.
-
-    We cannot just hand the original URL to the browser: assets uploaded
-    under the default ``authenticated`` delivery return HTTP 401 to
-    anonymous users (this is exactly the symptom on the public site:
-    "This site can't be reached" / "HTTP ERROR 401").
-
-    Instead, we strip the public_id out of the stored URL, ask Cloudinary
-    to sign a short-lived download URL, and proxy it through this backend
-    with the correct ``Content-Type``/``Content-Disposition`` so Chrome's
-    PDF viewer can render the file inline.
+    The public_id passed here is the *exact* value stored on the DB row
+    (e.g. ``portfolio/pdf/<token>.pdf``) — Cloudinary's
+    ``private_download_url`` understands that format directly without us
+    having to re-parse the secure_url.
     """
-    if not url:
-        return url
-    public_id = extract_public_id_from_url(url, resource_type="raw")
-    if not public_id:
-        return url
-    return _proxy_url(public_id)
+    from urllib.parse import quote
+
+    return f"/api/files/raw?public_id={quote(public_id, safe='/')}"
+
+
+def _rewrite_to_proxy(url: Optional[str], public_id: Optional[str]) -> Optional[str]:
+    """Swap a stored Cloudinary URL for our internal proxy URL.
+
+    We prefer the DB-stored ``public_id`` over regex-extracting one from
+    the URL — it is the *exact* value Cloudinary expects to sign and
+    avoids the path-segment ambiguity between ``folder`` and
+    ``public_id``. For legacy rows whose ``public_id`` column is NULL,
+    we fall back to parsing the secure_url.
+    """
+    if public_id:
+        return _proxy_url(public_id)
+    if url:
+        fallback_id = extract_public_id_from_url(url, resource_type="raw")
+        if fallback_id:
+            return _proxy_url(fallback_id)
+    return url
 
 
 @router.get("/about", response_model=AboutContentResponse)
@@ -91,7 +91,7 @@ async def get_about(db: AsyncSession = Depends(get_db)):
     # Rewrite the CV URL to the proxy so the browser gets a real PDF
     # (Cloudinary's "raw" delivery is authenticated by default).
     if about.cv_file_path:
-        about.cv_file_path = _rewrite_raw_url_to_proxy(about.cv_file_path)
+        about.cv_file_path = _rewrite_to_proxy(about.cv_file_path, about.cv_public_id)
     return about
 
 
@@ -127,7 +127,7 @@ async def get_certificates(db: AsyncSession = Depends(get_db)):
     # the PDF. The raw Cloudinary URL returns 401 to anonymous visitors.
     for cert in certs:
         if cert.file_path:
-            cert.file_path = _rewrite_raw_url_to_proxy(cert.file_path)
+            cert.file_path = _rewrite_to_proxy(cert.file_path, cert.file_public_id)
     return certs
 
 
@@ -219,6 +219,12 @@ async def proxy_raw_file(public_id: str = Query(..., min_length=1)):
     The response is marked ``inline`` with the correct ``Content-Type``
     so the browser's built-in PDF viewer can render the certificate /
     resume without a download dialog.
+
+    We also strip the upstream ``Content-Encoding`` header (Cloudinary
+    raw resources are sometimes served with ``Content-Encoding: gzip``
+    while httpx has already decoded the body) and pass through the
+    upstream ``Content-Length`` so Chrome's PDF viewer knows the file
+    size up-front and can render the progress bar.
     """
     signed_url = sign_raw_download_url(public_id, ttl_seconds=300)
     if not signed_url:
@@ -249,11 +255,16 @@ async def proxy_raw_file(public_id: str = Query(..., min_length=1)):
                 async for chunk in upstream.aiter_bytes(chunk_size=64 * 1024):
                     yield chunk
 
-    headers = {
+    response_headers = {
         "Content-Disposition": (
             f'inline; filename="{filename}"' if is_pdf
             else f'attachment; filename="{filename}"'
         ),
         "Cache-Control": "private, max-age=60",
+        "Accept-Ranges": "bytes",
     }
-    return StreamingResponse(_stream(), media_type=media_type, headers=headers)
+    return StreamingResponse(
+        _stream(),
+        media_type=media_type,
+        headers=response_headers,
+    )
