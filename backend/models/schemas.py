@@ -21,6 +21,7 @@ class AboutContentBase(BaseModel):
     bio: str
     title: str
     photo_url: Optional[str] = None
+    photo_public_id: Optional[str] = None
     education: Optional[str] = None
     focus_area: Optional[str] = None
     subtitle: Optional[str] = None
@@ -29,6 +30,7 @@ class AboutContentBase(BaseModel):
     scholar_url: Optional[str] = None
     extra_links: Optional[str] = None  # JSON string of [{name, url, icon}]
     cv_file_path: Optional[str] = None
+    cv_public_id: Optional[str] = None
     project_display_count: Optional[int] = 6
 
 
@@ -47,6 +49,7 @@ class ProjectBase(BaseModel):
     repo_url: Optional[str] = None
     demo_url: Optional[str] = None
     image_url: Optional[str] = None
+    image_public_id: Optional[str] = None
     order: int = 0
 
 
@@ -104,6 +107,7 @@ class ExperienceBase(BaseModel):
     period: str
     description: Optional[str] = None
     logo_url: Optional[str] = None
+    logo_public_id: Optional[str] = None
 
 
 class ExperienceResponse(ExperienceBase):
@@ -119,6 +123,7 @@ class CertificateBase(BaseModel):
     issuer: Optional[str] = None
     date: Optional[str] = None
     file_path: Optional[str] = None
+    file_public_id: Optional[str] = None
 
 
 class CertificateResponse(CertificateBase):

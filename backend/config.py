@@ -35,7 +35,15 @@ class Settings(BaseSettings):
     ]
     CORS_ORIGIN_REGEX: Optional[str] = None
 
-    DATABASE_URL: str = "sqlite+aiosqlite:///./portfolio.db"
+    # Neon PostgreSQL pooled connection string.
+    # Format: postgresql+asyncpg://user:pass@host-pooler.region.aws.neon.tech/neondb?sslmode=require
+    # In production set this via the DATABASE_URL environment variable on Render.
+    DATABASE_URL: str = ""
+
+    # Cloudinary credentials (used for image and PDF storage)
+    CLOUDINARY_CLOUD_NAME: str = ""
+    CLOUDINARY_API_KEY: str = ""
+    CLOUDINARY_API_SECRET: str = ""
 
     # Set TESTING=true in test environment to allow default SECRET_KEY
     TESTING: bool = False
@@ -91,3 +99,22 @@ def validate_settings_at_startup() -> None:
             "and set ADMIN_PASSWORD_HASH in your environment.",
             stacklevel=2,
         )
+
+    # In non-test environments, require DATABASE_URL and Cloudinary credentials.
+    # They are mandatory for Neon + Cloudinary storage architecture.
+    if not settings.TESTING:
+        missing = []
+        if not settings.DATABASE_URL:
+            missing.append("DATABASE_URL")
+        if not settings.CLOUDINARY_CLOUD_NAME:
+            missing.append("CLOUDINARY_CLOUD_NAME")
+        if not settings.CLOUDINARY_API_KEY:
+            missing.append("CLOUDINARY_API_KEY")
+        if not settings.CLOUDINARY_API_SECRET:
+            missing.append("CLOUDINARY_API_SECRET")
+        if missing:
+            raise RuntimeError(
+                "FATAL: The following required environment variables are not set: "
+                + ", ".join(missing)
+                + ". Configure them in your Render environment."
+            )

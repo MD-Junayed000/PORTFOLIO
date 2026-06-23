@@ -5,7 +5,22 @@ from datetime import datetime, timezone
 from config import settings
 
 
-engine = create_async_engine(settings.DATABASE_URL, echo=False)
+# Normalize the Neon pooled connection string.
+# - SQLAlchemy async needs the postgresql+asyncpg:// driver prefix.
+# - channel_binding=require is not supported by asyncpg; strip it out so
+#   the async engine does not reject the connection.
+def _build_engine_kwargs(url: str) -> dict:
+    if not url:
+        return {}
+    kwargs: dict = {"echo": False}
+    if url.startswith("postgres"):
+        # asyncpg supports sslmode via connect_args
+        if "sslmode=require" in url or "ssl=true" in url.lower():
+            kwargs["connect_args"] = {"ssl": True}
+    return kwargs
+
+
+engine = create_async_engine(settings.DATABASE_URL, **_build_engine_kwargs(settings.DATABASE_URL))
 async_session = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
 
 
@@ -20,6 +35,7 @@ class AboutContent(Base):
     bio = Column(Text, nullable=False)
     title = Column(String(255), nullable=False)
     photo_url = Column(String(500), nullable=True)
+    photo_public_id = Column(String(500), nullable=True)
     education = Column(Text, nullable=True)
     focus_area = Column(Text, nullable=True)
     subtitle = Column(String(500), nullable=True)
@@ -28,6 +44,7 @@ class AboutContent(Base):
     scholar_url = Column(String(500), nullable=True)
     extra_links = Column(Text, nullable=True)  # JSON string of [{name, url, icon}]
     cv_file_path = Column(String(500), nullable=True)
+    cv_public_id = Column(String(500), nullable=True)
     project_display_count = Column(Integer, nullable=True, default=6)
 
 
@@ -41,6 +58,7 @@ class Project(Base):
     repo_url = Column(String(500), nullable=True)
     demo_url = Column(String(500), nullable=True)
     image_url = Column(String(500), nullable=True)
+    image_public_id = Column(String(500), nullable=True)
     order = Column(Integer, default=0)
 
 
@@ -73,6 +91,7 @@ class Experience(Base):
     period = Column(String(100), nullable=False)
     description = Column(Text, nullable=True)
     logo_url = Column(String(500), nullable=True)
+    logo_public_id = Column(String(500), nullable=True)
 
 
 class Certificate(Base):
@@ -83,6 +102,7 @@ class Certificate(Base):
     issuer = Column(String(255), nullable=True)
     date = Column(String(50), nullable=True)
     file_path = Column(String(500), nullable=True)
+    file_public_id = Column(String(500), nullable=True)
 
 
 class ContactMessage(Base):
@@ -114,53 +134,7 @@ class Document(Base):
     original_name = Column(String(500), nullable=True)
     uploaded_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
     chunk_count = Column(Integer, default=0)
-
-
-async def init_db():
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
-        # Auto-migrate: add missing columns to existing tables (SQLite only)
-        await conn.run_sync(_add_missing_columns)
-
-
-def _add_missing_columns(conn):
-    """Inspect existing tables and add any missing columns via ALTER TABLE.
-
-    SQLAlchemy's create_all() only creates new tables; it does not add new
-    columns to existing ones. This function bridges that gap for SQLite
-    deployments that do not use Alembic.
-    """
-    from sqlalchemy import inspect as sa_inspect, text as sa_text
-
-    inspector = sa_inspect(conn)
-    for table in Base.metadata.sorted_tables:
-        if not inspector.has_table(table.name):
-            continue  # Table will be created by create_all
-
-        existing_columns = {col["name"] for col in inspector.get_columns(table.name)}
-        for column in table.columns:
-            if column.name not in existing_columns:
-                # Build column type string
-                col_type = column.type.compile(conn.dialect)
-                nullable = "NULL" if column.nullable else "NOT NULL"
-                default_clause = ""
-                if column.default is not None:
-                    default_val = column.default.arg
-                    if callable(default_val):
-                        default_clause = ""  # Skip callable defaults
-                    elif isinstance(default_val, str):
-                        default_clause = f" DEFAULT '{default_val}'"
-                    else:
-                        default_clause = f" DEFAULT {default_val}"
-
-                alter_sql = (
-                    f'ALTER TABLE "{table.name}" ADD COLUMN "{column.name}" '
-                    f"{col_type} {nullable}{default_clause}"
-                )
-                try:
-                    conn.execute(sa_text(alter_sql))
-                except Exception:
-                    pass  # Column may already exist in a concurrent scenario
+    cloudinary_public_id = Column(String(500), nullable=True)
 
 
 async def get_db():

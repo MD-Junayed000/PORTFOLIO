@@ -1,13 +1,12 @@
 from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.staticfiles import StaticFiles
 import os
 
 from config import settings, validate_settings_at_startup
-from database import init_db
 from services.vector_store import initialize_collection
 from services.seed_data import seed_database, seed_vector_store
+from services.cloudinary_service import configure_cloudinary
 from routers import auth, admin, public, chat
 
 # Validate critical settings before the app starts accepting requests
@@ -17,7 +16,8 @@ validate_settings_at_startup()
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # Startup
-    await init_db()
+    configure_cloudinary()
+    # Schema is owned by Alembic; run `alembic upgrade head` on deploy.
     initialize_collection()
     await seed_database()
     seed_vector_store()
@@ -45,9 +45,8 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Mount uploads directory for static file serving
-os.makedirs("./uploads", exist_ok=True)
-app.mount("/uploads", StaticFiles(directory="uploads"), name="uploads")
+# Permanent image storage lives in Cloudinary. We do NOT mount a local
+# uploads directory on Render because the disk is ephemeral.
 
 # Include routers
 app.include_router(auth.router)

@@ -2,6 +2,7 @@ import os
 import time
 import uuid
 import httpx
+from datetime import datetime, timezone
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, text
@@ -42,11 +43,18 @@ from models.schemas import (
 )
 from routers.auth import get_current_admin
 from services.vector_store import process_pdf, delete_document
+from services.cloudinary_service import (
+    configure_cloudinary,
+    upload_image,
+    upload_pdf,
+    delete_asset,
+)
 from config import settings
 
 router = APIRouter(prefix="/api/admin", tags=["admin"])
 
-UPLOAD_DIR = "./uploads"
+# Make sure Cloudinary is configured before any upload is attempted
+configure_cloudinary()
 
 # Allowed image MIME types for photo uploads
 ALLOWED_IMAGE_TYPES = {"image/jpeg", "image/png", "image/gif", "image/webp"}
@@ -117,6 +125,8 @@ async def delete_project(
     project = result.scalar_one_or_none()
     if project is None:
         raise HTTPException(status_code=404, detail="Project not found")
+    if project.image_public_id:
+        delete_asset(project.image_public_id, resource_type="image")
     await db.delete(project)
     await db.commit()
     return {"detail": "Project deleted"}
@@ -278,15 +288,23 @@ async def delete_certificate(
     certificate = result.scalar_one_or_none()
     if certificate is None:
         raise HTTPException(status_code=404, detail="Certificate not found")
+
+    # Best-effort delete of the Cloudinary asset. The DB row is the source
+    # of truth, so a Cloudinary failure must not block the DB delete.
+    if certificate.file_public_id:
+        resource_type = "raw" if (certificate.file_path or "").lower().endswith(".pdf") else "image"
+        delete_asset(certificate.file_public_id, resource_type=resource_type)
+
     await db.delete(certificate)
     await db.commit()
     return {"detail": "Certificate deleted"}
 
 
-# File uploads
+# File uploads (Cloudinary)
 @router.post("/upload-photo")
 async def upload_photo(
     file: UploadFile = File(...),
+    db: AsyncSession = Depends(get_db),
     admin: dict = Depends(get_current_admin),
 ):
     # Validate content type
@@ -296,8 +314,6 @@ async def upload_photo(
             detail=f"Invalid file type. Allowed: {', '.join(ALLOWED_IMAGE_TYPES)}",
         )
 
-    os.makedirs(UPLOAD_DIR, exist_ok=True)
-
     # Read file content with size limit
     content = await file.read()
     if len(content) > settings.MAX_PHOTO_SIZE:
@@ -306,27 +322,34 @@ async def upload_photo(
             detail=f"File too large. Maximum size is {settings.MAX_PHOTO_SIZE // (1024 * 1024)} MB",
         )
 
-    # Generate a safe UUID-based filename to prevent path traversal
-    ext = os.path.splitext(file.filename or "photo.jpg")[1].lower()
-    if ext not in (".jpg", ".jpeg", ".png", ".gif", ".webp"):
-        ext = ".jpg"
-    safe_filename = f"photo_{uuid.uuid4().hex}{ext}"
-    file_path = os.path.join(UPLOAD_DIR, safe_filename)
+    # Upload to Cloudinary
+    try:
+        secure_url, public_id = upload_image(content, original_filename=file.filename)
+    except RuntimeError as exc:
+        raise HTTPException(status_code=502, detail=str(exc))
 
-    with open(file_path, "wb") as f:
-        f.write(content)
-    return {"photo_url": f"/uploads/{safe_filename}"}
+    # Persist URL + public_id to the AboutContent row, deleting the old
+    # Cloudinary asset if one exists for this slot.
+    result = await db.execute(select(AboutContent))
+    about = result.scalar_one_or_none()
+    if about is not None:
+        if about.photo_public_id and about.photo_public_id != public_id:
+            delete_asset(about.photo_public_id, resource_type="image")
+        about.photo_url = secure_url
+        about.photo_public_id = public_id
+    await db.commit()
+
+    return {"photo_url": secure_url, "public_id": public_id}
 
 
 @router.post("/upload-cv")
 async def upload_cv(
     file: UploadFile = File(...),
+    db: AsyncSession = Depends(get_db),
     admin: dict = Depends(get_current_admin),
 ):
     if not file.filename or not file.filename.lower().endswith(".pdf"):
         raise HTTPException(status_code=400, detail="Only PDF files are accepted")
-
-    os.makedirs(UPLOAD_DIR, exist_ok=True)
 
     # Read file content with size limit
     content = await file.read()
@@ -336,14 +359,27 @@ async def upload_cv(
             detail=f"File too large. Maximum size is {settings.MAX_PDF_SIZE // (1024 * 1024)} MB",
         )
 
-    # Generate a safe UUID-based filename
-    safe_filename = f"cv_{uuid.uuid4().hex}.pdf"
-    file_path = os.path.join(UPLOAD_DIR, safe_filename)
+    # Upload to Cloudinary as a raw resource (PDF)
+    try:
+        secure_url, public_id = upload_pdf(content, original_filename=file.filename)
+    except RuntimeError as exc:
+        raise HTTPException(status_code=502, detail=str(exc))
 
-    with open(file_path, "wb") as f:
-        f.write(content)
+    # Persist URL + public_id to the AboutContent row, deleting the old CV
+    # from Cloudinary if it existed.
+    result = await db.execute(select(AboutContent))
+    about = result.scalar_one_or_none()
+    if about is None:
+        about = AboutContent(bio="", title="Portfolio")
+        db.add(about)
+    if about.cv_public_id and about.cv_public_id != public_id:
+        delete_asset(about.cv_public_id, resource_type="raw")
+    about.cv_file_path = secure_url
+    about.cv_public_id = public_id
+    await db.commit()
+    await db.refresh(about)
 
-    return {"cv_url": f"/uploads/{safe_filename}", "filename": safe_filename}
+    return {"cv_url": secure_url, "public_id": public_id, "filename": file.filename}
 
 
 @router.delete("/cv")
@@ -356,12 +392,12 @@ async def delete_cv(
     if about is None or not about.cv_file_path:
         raise HTTPException(status_code=404, detail="No CV file found")
 
-    # Delete file from disk
-    file_path = os.path.join(UPLOAD_DIR, os.path.basename(about.cv_file_path))
-    if os.path.exists(file_path):
-        os.remove(file_path)
+    # Delete from Cloudinary (best effort)
+    if about.cv_public_id:
+        delete_asset(about.cv_public_id, resource_type="raw")
 
     about.cv_file_path = None
+    about.cv_public_id = None
     await db.commit()
     return {"detail": "CV deleted"}
 
@@ -378,8 +414,6 @@ async def upload_certificate(
             detail=f"Invalid file type. Allowed: images and PDF",
         )
 
-    os.makedirs(UPLOAD_DIR, exist_ok=True)
-
     # Read file content with size limit
     content = await file.read()
     if len(content) > settings.MAX_PDF_SIZE:
@@ -388,16 +422,19 @@ async def upload_certificate(
             detail=f"File too large. Maximum size is {settings.MAX_PDF_SIZE // (1024 * 1024)} MB",
         )
 
-    # Generate a safe UUID-based filename
-    ext = os.path.splitext(file.filename or "cert.jpg")[1].lower()
-    if ext not in (".jpg", ".jpeg", ".png", ".gif", ".webp", ".pdf"):
-        ext = ".jpg"
-    safe_filename = f"cert_{uuid.uuid4().hex}{ext}"
-    file_path = os.path.join(UPLOAD_DIR, safe_filename)
+    # Choose resource type based on content
+    if file.content_type == "application/pdf":
+        try:
+            secure_url, public_id = upload_pdf(content, original_filename=file.filename)
+        except RuntimeError as exc:
+            raise HTTPException(status_code=502, detail=str(exc))
+    else:
+        try:
+            secure_url, public_id = upload_image(content, original_filename=file.filename)
+        except RuntimeError as exc:
+            raise HTTPException(status_code=502, detail=str(exc))
 
-    with open(file_path, "wb") as f:
-        f.write(content)
-    return {"file_url": f"/uploads/{safe_filename}"}
+    return {"file_url": secure_url, "public_id": public_id}
 
 
 @router.post("/upload-pdf")
@@ -410,8 +447,6 @@ async def upload_pdf(
     if not file.filename or not file.filename.lower().endswith(".pdf"):
         raise HTTPException(status_code=400, detail="Only PDF files are accepted")
 
-    os.makedirs(UPLOAD_DIR, exist_ok=True)
-
     # Read file content with size limit
     content = await file.read()
     if len(content) > settings.MAX_PDF_SIZE:
@@ -420,33 +455,47 @@ async def upload_pdf(
             detail=f"File too large. Maximum size is {settings.MAX_PDF_SIZE // (1024 * 1024)} MB",
         )
 
-    # Generate a safe UUID-based filename to prevent path traversal
-    safe_filename = f"doc_{uuid.uuid4().hex}.pdf"
-    file_path = os.path.join(UPLOAD_DIR, safe_filename)
+    # Upload the PDF to Cloudinary as a raw resource for permanent storage
+    try:
+        secure_url, public_id = upload_pdf(content, original_filename=file.filename)
+    except RuntimeError as exc:
+        raise HTTPException(status_code=502, detail=str(exc))
 
-    with open(file_path, "wb") as f:
-        f.write(content)
+    # Process PDF for vector store using a temporary local copy (transient only)
+    import tempfile
 
-    # Process PDF for vector store
-    doc_ids = process_pdf(file_path)
+    with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as tmp:
+        tmp.write(content)
+        tmp_path = tmp.name
+    try:
+        doc_ids = process_pdf(tmp_path)
+    finally:
+        try:
+            os.remove(tmp_path)
+        except OSError:
+            pass
 
     # Save document metadata to DB
     document = Document(
-        filename=safe_filename,
+        filename=secure_url,
         topic=topic_name,
         original_name=file.filename,
+        uploaded_at=datetime.now(timezone.utc),
         chunk_count=len(doc_ids),
     )
+    # Persist Cloudinary public_id alongside the URL via a transient attribute
+    setattr(document, "cloudinary_public_id", public_id)
     db.add(document)
     await db.commit()
     await db.refresh(document)
 
     return {
-        "filename": safe_filename,
+        "filename": secure_url,
         "chunks_added": len(doc_ids),
         "doc_ids": doc_ids,
         "topic": topic_name,
         "document_id": document.id,
+        "cloudinary_public_id": public_id,
     }
 
 
@@ -470,10 +519,10 @@ async def remove_document(
     except Exception:
         pass  # Best effort deletion of vector chunks
 
-    # Delete the file from disk
-    file_path = os.path.join(UPLOAD_DIR, document.filename)
-    if os.path.exists(file_path):
-        os.remove(file_path)
+    # Delete from Cloudinary (best effort, only if a public id is stored)
+    public_id = getattr(document, "cloudinary_public_id", None)
+    if public_id:
+        delete_asset(public_id, resource_type="raw")
 
     # Delete DB record
     await db.delete(document)
@@ -549,6 +598,8 @@ async def delete_experience(
     experience = result.scalar_one_or_none()
     if experience is None:
         raise HTTPException(status_code=404, detail="Experience not found")
+    if experience.logo_public_id:
+        delete_asset(experience.logo_public_id, resource_type="image")
     await db.delete(experience)
     await db.commit()
     return {"detail": "Experience deleted"}
@@ -707,20 +758,26 @@ async def smoke_test(
         }
 
 
-# Database viewer
+# Database viewer (PostgreSQL)
 @router.get("/database")
 async def database_viewer(
     db: AsyncSession = Depends(get_db),
     admin: dict = Depends(get_current_admin),
 ):
     result = await db.execute(
-        text("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'")
+        text(
+            "SELECT tablename FROM pg_tables "
+            "WHERE schemaname = current_schema() "
+            "AND tablename NOT LIKE 'pg_%' "
+            "AND tablename NOT LIKE 'alembic_%'"
+        )
     )
     tables = result.scalars().all()
 
     table_info = []
     for table_name in tables:
-        count_result = await db.execute(text(f"SELECT COUNT(*) FROM \"{table_name}\""))
+        # Identifier is not user input, so formatting into the query is safe.
+        count_result = await db.execute(text(f'SELECT COUNT(*) FROM "{table_name}"'))
         row_count = count_result.scalar()
         table_info.append({"name": table_name, "row_count": row_count})
 

@@ -4,6 +4,9 @@ services:
     runtime: python
     rootDir: backend
     buildCommand: pip install -r requirements.txt
+    # releaseCommand runs migrations before each deploy so the Neon schema
+    # is always in sync with the code.
+    preDeployCommand: alembic upgrade head
     startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT
     healthCheckPath: /api/health
     envVars:
@@ -21,7 +24,16 @@ services:
         value: ./chroma_data
       - key: CORS_ORIGINS
         sync: false
+      # Neon PostgreSQL pooled connection string.
+      # Set the value in the Render dashboard so it is not committed to git.
       - key: DATABASE_URL
-        value: sqlite+aiosqlite:///./portfolio.db
+        sync: false
+      # Cloudinary storage
+      - key: CLOUDINARY_CLOUD_NAME
+        sync: false
+      - key: CLOUDINARY_API_KEY
+        sync: false
+      - key: CLOUDINARY_API_SECRET
+        sync: false
       - key: PYTHON_VERSION
         value: "3.11.0"

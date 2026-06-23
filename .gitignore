@@ -38,7 +38,7 @@ uploads/*
 .idea/
 *.swp
 *.swo
-
+.puku/
 # OS
 .DS_Store
 Thumbs.db
