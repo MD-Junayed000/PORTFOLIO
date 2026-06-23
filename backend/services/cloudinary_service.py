@@ -81,12 +81,20 @@ def upload_pdf(
 ) -> Tuple[str, str]:
     """Upload a PDF as a Cloudinary 'raw' resource.
 
-    Returns (secure_url, public_id). The secure URL works for direct browser
-    downloads when delivered with the correct Content-Type (raw files keep
-    their original extension).
+    Returns (secure_url, public_id). For ``resource_type="raw"`` Cloudinary
+    serves the file under the URL path as-is and serves ``Content-Type`` based
+    on the extension embedded in ``public_id``. If the extension is missing
+    the browser receives a generic ``application/octet-stream`` blob and the
+    file is saved without a ``.pdf`` suffix — so we always append the original
+    extension (defaulting to ``.pdf``) to the generated token.
     """
     configure_cloudinary()
-    public_id = _generate_public_id("pdf")
+    extension = "pdf"
+    if original_filename and "." in original_filename:
+        candidate = original_filename.rsplit(".", 1)[-1].strip().lower()
+        if candidate.isalnum() and len(candidate) <= 5:
+            extension = candidate
+    public_id = f"{_generate_public_id('pdf')}.{extension}"
     try:
         result = cloudinary.uploader.upload(
             file_bytes,

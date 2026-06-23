@@ -4,10 +4,8 @@ import { useEffect, useState } from "react";
 import { motion } from "framer-motion";
 import { Briefcase } from "lucide-react";
 import Image from "next/image";
-import api from "@/lib/api";
+import api, { absolutizeUrl } from "@/lib/api";
 import type { Experience as ExperienceType } from "@/types";
-
-const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
 
 export default function Experience() {
   const [experiences, setExperiences] = useState<ExperienceType[]>([]);
@@ -79,17 +77,20 @@ export default function Experience() {
                             </p>
                           )}
                         </div>
-                        {item.logo_url && (
-                          <div className="flex-shrink-0 ml-4 flex items-center">
-                            <Image
-                              src={`${API_URL}${item.logo_url}`}
-                              alt={`${item.organization} logo`}
-                              width={64}
-                              height={64}
-                              className="rounded-lg object-contain"
-                            />
-                          </div>
-                        )}
+                        {item.logo_url && (() => {
+                          const logoSrc = absolutizeUrl(item.logo_url);
+                          return logoSrc ? (
+                            <div className="flex-shrink-0 ml-4 flex items-center">
+                              <Image
+                                src={logoSrc}
+                                alt={`${item.organization} logo`}
+                                width={64}
+                                height={64}
+                                className="rounded-lg object-contain"
+                              />
+                            </div>
+                          ) : null;
+                        })()}
                       </div>
                     </div>
                   </motion.div>

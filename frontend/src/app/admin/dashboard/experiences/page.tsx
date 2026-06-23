@@ -2,7 +2,7 @@
 
 import { useEffect, useState, useRef } from "react";
 import { Plus, Pencil, Trash2, Loader2, X, Upload } from "lucide-react";
-import api from "@/lib/api";
+import api, { absolutizeUrl } from "@/lib/api";
 import toast from "react-hot-toast";
 import type { Experience } from "@/types";
 
@@ -39,7 +39,13 @@ export default function AdminExperiences() {
     try {
       const formData = new FormData();
       formData.append("file", file);
-      const res = await api.post("/api/admin/upload-photo", formData, {
+      // Editing an existing experience → persist to that row only. Creating
+      // a new one → just upload to Cloudinary (the URL is sent in the POST
+      // /experiences payload below).
+      const params = editingId
+        ? `?target=experience&target_id=${editingId}`
+        : "?target=none";
+      const res = await api.post(`/api/admin/upload-photo${params}`, formData, {
         headers: { "Content-Type": "multipart/form-data" },
       });
       setForm({ ...form, logo_url: res.data.photo_url });
@@ -268,13 +274,16 @@ export default function AdminExperiences() {
             className="bg-surface border border-border rounded-lg p-4 flex items-center justify-between"
           >
             <div className="flex items-center gap-3">
-              {exp.logo_url && (
-                <img
-                  src={`${process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000"}${exp.logo_url}`}
-                  alt={exp.organization}
-                  className="w-8 h-8 rounded object-cover"
-                />
-              )}
+              {exp.logo_url && (() => {
+                const logoSrc = absolutizeUrl(exp.logo_url);
+                return logoSrc ? (
+                  <img
+                    src={logoSrc}
+                    alt={exp.organization}
+                    className="w-8 h-8 rounded object-cover"
+                  />
+                ) : null;
+              })()}
               <div>
                 <h3 className="text-sm font-semibold text-foreground">
                   {exp.title}

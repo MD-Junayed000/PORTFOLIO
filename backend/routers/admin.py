@@ -301,9 +301,39 @@ async def delete_certificate(
 @router.post("/upload-photo")
 async def upload_photo(
     file: UploadFile = File(...),
+    target: Optional[str] = None,
+    target_id: Optional[int] = None,
     db: AsyncSession = Depends(get_db),
     admin: dict = Depends(get_current_admin),
 ):
+    """Upload an image to Cloudinary and return the URL.
+
+    ``target`` controls which row in the database is updated so that uploading
+    a project image, a certificate logo, or an experience logo never clobbers
+    the profile photo on the About row. Supported values:
+
+    - ``"about"``   (default) — writes to ``AboutContent.photo_url``.
+    - ``"project"``  — requires ``target_id``; writes to ``Project.image_url``.
+    - ``"experience"`` — requires ``target_id``; writes to ``Experience.logo_url``.
+    - ``"certificate"`` — requires ``target_id``; writes to ``Certificate.logo_url``.
+    - ``"none"``    — only uploads to Cloudinary; the caller stores the URL
+      itself (e.g. inside ``extra_metadata`` of a draft entry).
+
+    Old Cloudinary assets referenced by the row being updated are deleted
+    automatically.
+    """
+    if target is None:
+        target = "about"
+    target = target.lower().strip()
+    if target not in {"about", "project", "experience", "certificate", "none"}:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Invalid target. Use one of: about, project, experience, "
+                "certificate, none."
+            ),
+        )
+
     # Validate content type
     if file.content_type not in ALLOWED_IMAGE_TYPES:
         raise HTTPException(
@@ -325,18 +355,73 @@ async def upload_photo(
     except RuntimeError as exc:
         raise HTTPException(status_code=502, detail=str(exc))
 
-    # Persist URL + public_id to the AboutContent row, deleting the old
-    # Cloudinary asset if one exists for this slot.
-    result = await db.execute(select(AboutContent))
-    about = result.scalar_one_or_none()
-    if about is not None:
+    # Persist the URL to the right row, deleting the old Cloudinary asset
+    # only if it actually belonged to that row (so a project image upload
+    # never deletes the profile photo's Cloudinary asset).
+    if target == "about":
+        result = await db.execute(select(AboutContent))
+        about = result.scalar_one_or_none()
+        if about is None:
+            about = AboutContent(bio="", title="Portfolio")
+            db.add(about)
         if about.photo_public_id and about.photo_public_id != public_id:
             delete_asset(about.photo_public_id, resource_type="image")
         about.photo_url = secure_url
         about.photo_public_id = public_id
+    elif target == "project":
+        if target_id is None:
+            raise HTTPException(
+                status_code=400,
+                detail="target_id is required when target=project",
+            )
+        result = await db.execute(select(Project).where(Project.id == target_id))
+        project = result.scalar_one_or_none()
+        if project is None:
+            raise HTTPException(status_code=404, detail="Project not found")
+        if project.image_public_id and project.image_public_id != public_id:
+            delete_asset(project.image_public_id, resource_type="image")
+        project.image_url = secure_url
+        project.image_public_id = public_id
+    elif target == "experience":
+        if target_id is None:
+            raise HTTPException(
+                status_code=400,
+                detail="target_id is required when target=experience",
+            )
+        result = await db.execute(select(Experience).where(Experience.id == target_id))
+        exp = result.scalar_one_or_none()
+        if exp is None:
+            raise HTTPException(status_code=404, detail="Experience not found")
+        if exp.logo_public_id and exp.logo_public_id != public_id:
+            delete_asset(exp.logo_public_id, resource_type="image")
+        exp.logo_url = secure_url
+        exp.logo_public_id = public_id
+    elif target == "certificate":
+        if target_id is None:
+            raise HTTPException(
+                status_code=400,
+                detail="target_id is required when target=certificate",
+            )
+        result = await db.execute(
+            select(Certificate).where(Certificate.id == target_id)
+        )
+        cert = result.scalar_one_or_none()
+        if cert is None:
+            raise HTTPException(status_code=404, detail="Certificate not found")
+        if cert.image_public_id and cert.image_public_id != public_id:
+            delete_asset(cert.image_public_id, resource_type="image")
+        cert.image_url = secure_url
+        cert.image_public_id = public_id
+    # target == "none" → just upload; caller stores the URL itself.
+
     await db.commit()
 
-    return {"photo_url": secure_url, "public_id": public_id}
+    return {
+        "photo_url": secure_url,
+        "public_id": public_id,
+        "target": target,
+        "target_id": target_id,
+    }
 
 
 @router.post("/upload-cv")

@@ -45,7 +45,14 @@ export default function AdminProjects() {
     try {
       const formData = new FormData();
       formData.append("file", file);
-      const res = await api.post("/api/admin/upload-photo", formData, {
+      // Editing an existing project → persist to its row (so the About profile
+      // photo is never clobbered by a project image upload). Creating a new
+      // project → just upload to Cloudinary and stash the URL locally until
+      // the project row is created.
+      const params = editingId
+        ? `?target=project&target_id=${editingId}`
+        : "?target=none";
+      const res = await api.post(`/api/admin/upload-photo${params}`, formData, {
         headers: { "Content-Type": "multipart/form-data" },
       });
       setForm({ ...form, image_url: res.data.photo_url });

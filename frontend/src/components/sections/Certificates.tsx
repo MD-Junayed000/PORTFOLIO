@@ -3,7 +3,7 @@
 import { useEffect, useState } from "react";
 import { motion } from "framer-motion";
 import { Award, ExternalLink } from "lucide-react";
-import api from "@/lib/api";
+import api, { absolutizeUrl } from "@/lib/api";
 import type { Certificate } from "@/types";
 
 export default function Certificates() {
@@ -46,17 +46,22 @@ export default function Certificates() {
                 <p className="text-xs text-muted mb-2">{cert.issuer}</p>
                 <div className="flex items-center justify-between">
                   <span className="text-xs text-muted">{cert.date}</span>
-                  {cert.file_path && (
-                    <a
-                      href={`${process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000"}${cert.file_path}`}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="text-muted hover:text-foreground transition-colors"
-                      aria-label="View certificate"
-                    >
-                      <ExternalLink size={14} />
-                    </a>
-                  )}
+                  {cert.file_path && (() => {
+                    const href = absolutizeUrl(cert.file_path) ?? cert.file_path;
+                    const isPdf = /\.pdf($|\?)/i.test(href);
+                    return (
+                      <a
+                        href={href}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        download={isPdf ? `${cert.name || "certificate"}.pdf` : undefined}
+                        className="text-muted hover:text-foreground transition-colors"
+                        aria-label="View certificate"
+                      >
+                        <ExternalLink size={14} />
+                      </a>
+                    );
+                  })()}
                 </div>
               </motion.div>
             ))}

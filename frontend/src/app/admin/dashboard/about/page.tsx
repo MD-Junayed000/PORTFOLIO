@@ -79,9 +79,11 @@ export default function AdminAbout() {
     const formData = new FormData();
     formData.append("file", file);
     try {
-      await api.post("/api/admin/upload-photo", formData, {
-        headers: { "Content-Type": "multipart/form-data" },
-      });
+      await api.post(
+        "/api/admin/upload-photo?target=about",
+        formData,
+        { headers: { "Content-Type": "multipart/form-data" } }
+      );
       toast.success("Photo uploaded");
     } catch {
       toast.error("Upload failed");

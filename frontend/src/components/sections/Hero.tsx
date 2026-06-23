@@ -69,6 +69,9 @@ export default function Hero() {
   const cvUrl = rawCvUrl.startsWith("/uploads/")
     ? `${API_BASE_URL}${rawCvUrl}`
     : rawCvUrl;
+  // Suggest a friendly filename for the download so the browser saves it as
+  // a real .pdf even if the upstream CDN omits Content-Disposition.
+  const cvDownloadName = "Muhammad_Junayed_CV.pdf";
 
   // Profile image: use API photo_url if available, fallback to static image
   const profileImageSrc = about?.photo_url 
@@ -133,6 +136,7 @@ export default function Hero() {
               href={cvUrl}
               target="_blank"
               rel="noopener noreferrer"
+              download={cvDownloadName}
               className="inline-flex items-center gap-2 px-6 py-3 border border-border hover:border-primary/50 hover:bg-surface text-foreground rounded-lg font-medium transition-colors"
             >
               <Download size={18} />
