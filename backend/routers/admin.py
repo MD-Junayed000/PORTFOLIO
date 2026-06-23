@@ -1,10 +1,13 @@
 import os
 import time
 import uuid
+import base64
 import logging
+import tempfile
+import traceback
 import httpx
 from datetime import datetime, timezone
-from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form, Query
+from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form, Query, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, text
 from typing import Any, Dict, List, Optional
@@ -582,6 +585,153 @@ async def upload_pdf(
         "document_id": document.id,
         "cloudinary_public_id": public_id,
     }
+
+
+@router.post("/debug/process-pdf")
+async def debug_process_pdf(
+    request: Request,
+    admin: dict = Depends(get_current_admin),
+):
+    """Diagnose process_pdf failures without going through Cloudinary.
+
+    Accepts raw application/pdf bytes OR {"filename": "...", "pdf_base64": "..."}
+    JSON. Writes the PDF to a temp file, runs process_pdf, and returns:
+
+    * ``checkpoint`` — the last ``process_pdf[...]`` log line reached before the
+      exception (or "ok" on success)
+    * ``exception_type`` / ``exception_message`` — what process_pdf raised
+    * ``traceback_tail`` — the last few lines of the traceback
+    * ``parsed_chunks`` — number of chunks that chunk_pdf_by_headings produced
+      (0 if the failure was earlier)
+
+    Use this to iterate on the upload bug without redeploying or attaching
+    Cloudinary.
+    """
+    # Accept either raw bytes (Content-Type: application/pdf) or JSON.
+    filename = "debug.pdf"
+    raw: bytes
+    content_type = (request.headers.get("content-type") or "").lower()
+
+    if "application/json" in content_type:
+        payload = await request.json()
+        filename = str(payload.get("filename") or filename)
+        b64 = payload.get("pdf_base64")
+        if not b64:
+            raise HTTPException(
+                status_code=400,
+                detail="JSON body must include 'pdf_base64'",
+            )
+        try:
+            raw = base64.b64decode(b64, validate=True)
+        except Exception as exc:
+            raise HTTPException(
+                status_code=400,
+                detail=f"pdf_base64 is not valid base64: {exc}",
+            )
+    else:
+        raw = await request.body()
+        cd_header = request.headers.get("content-disposition") or ""
+        if "filename=" in cd_header:
+            try:
+                filename = cd_header.split("filename=", 1)[1].strip('"; ')
+            except Exception:
+                pass
+
+    if not raw:
+        raise HTTPException(status_code=400, detail="Empty PDF body")
+
+    # Capture process_pdf's logger output so we can report the last checkpoint.
+    import io
+    log_stream = io.StringIO()
+    log_handler = logging.StreamHandler(log_stream)
+    log_handler.setLevel(logging.INFO)
+    log_handler.setFormatter(logging.Formatter("%(message)s"))
+
+    process_pdf_logger = logging.getLogger("services.vector_store.process_pdf")
+    process_pdf_logger.addHandler(log_handler)
+    previous_level = process_pdf_logger.level
+    process_pdf_logger.setLevel(logging.INFO)
+
+    # Also capture the route logger used by admin.py (HTTPException(500) path).
+    route_logger = logging.getLogger("routers.admin")
+    route_logger.addHandler(log_handler)
+
+    tmp_path: Optional[str] = None
+    result: Dict[str, Any] = {
+        "filename": filename,
+        "size_bytes": len(raw),
+        "checkpoint": "not_started",
+        "exception_type": None,
+        "exception_message": None,
+        "traceback_tail": None,
+        "parsed_chunks": None,
+        "doc_ids": None,
+    }
+    try:
+        with tempfile.NamedTemporaryFile(
+            suffix=".pdf", delete=False
+        ) as tmp:
+            tmp.write(raw)
+            tmp_path = tmp.name
+
+        from services.vector_store import process_pdf as _process_pdf
+        from services.vector_store import chunk_pdf_by_headings
+        from pypdf import PdfReader
+
+        # Manual checkpoints so we always know how far we got, even if the
+        # logger handler misses something.
+        checkpoints: List[str] = []
+        try:
+            reader = PdfReader(tmp_path)
+            full_text = "\n".join(
+                page.extract_text() or "" for page in reader.pages
+            ).strip()
+            checkpoints.append(
+                f"pdf_parsed chars={len(full_text)} pages={len(reader.pages)}"
+            )
+
+            if not full_text:
+                result.update({
+                    "checkpoint": "pdf_parsed_no_text",
+                    "exception_type": "EmptyPDF",
+                    "exception_message": "No extractable text in PDF",
+                })
+                return result
+
+            parsed = chunk_pdf_by_headings(full_text)
+            checkpoints.append(f"chunked count={len(parsed)}")
+            result["parsed_chunks"] = len(parsed)
+
+            doc_ids = _process_pdf(tmp_path)
+            result["checkpoint"] = "ok"
+            result["doc_ids"] = doc_ids
+            return result
+        except Exception as exc:
+            tb = traceback.format_exc().splitlines()
+            result.update({
+                "checkpoint": (
+                    checkpoints[-1] if checkpoints else "before_pdf_parsed"
+                ),
+                "exception_type": type(exc).__name__,
+                "exception_message": str(exc),
+                "traceback_tail": tb[-12:],
+            })
+            # Also persist to the real logger so Render's normal log stream
+            # shows the traceback for cross-referencing.
+            logger.exception(
+                "debug_process_pdf failed checkpoint=%s",
+                result["checkpoint"],
+            )
+            return result
+    finally:
+        process_pdf_logger.removeHandler(log_handler)
+        process_pdf_logger.setLevel(previous_level)
+        route_logger.removeHandler(log_handler)
+        if tmp_path:
+            try:
+                os.remove(tmp_path)
+            except OSError:
+                pass
 
 
 @router.delete("/documents/{doc_id}")
