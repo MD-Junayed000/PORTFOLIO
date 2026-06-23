@@ -6,28 +6,42 @@ import os
 # Add parent directory to path for imports
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-# Set test environment variables BEFORE importing the app
-os.environ["DATABASE_URL"] = "sqlite+aiosqlite:///./test_portfolio.db"
-os.environ["TESTING"] = "true"
-os.environ["SECRET_KEY"] = "test-secret-key-for-testing-only"
+# Set test environment variables BEFORE importing the app.
+# Use the in-memory asyncpg-compatible engine (Neon provides this via DATABASE_URL
+# in CI). For local tests, set DATABASE_URL in the environment to a Postgres URL
+# (e.g. a local docker postgres) — SQLite is no longer supported because the
+# real architecture uses asyncpg + pgvector.
+os.environ.setdefault("DATABASE_URL", "sqlite+aiosqlite:///./test_portfolio.db")
+os.environ.setdefault("TESTING", "true")
+os.environ.setdefault("SECRET_KEY", "test-secret-key-for-testing-only")
+os.environ.setdefault("CLOUDINARY_CLOUD_NAME", "test-cloud")
+os.environ.setdefault("CLOUDINARY_API_KEY", "test-key")
+os.environ.setdefault("CLOUDINARY_API_SECRET", "test-secret")
 
 from main import app
-from database import init_db, engine
+from database import engine
 from services.vector_store import initialize_collection
-from services.seed_data import seed_database, seed_vector_store
+from services.seed_data import seed_database
 
 
 @pytest.fixture(autouse=True)
 async def setup_db():
-    """Initialize database and vector store before tests."""
-    await init_db()
+    """Initialize database and vector store before tests.
+
+    The schema is created by Alembic migrations in production; for tests we
+    simply ensure the vector collection wrapper is ready. RAG ingestion is
+    MANUAL only — no automatic seeding happens.
+    """
     initialize_collection()
     await seed_database()
-    seed_vector_store()
     yield
     # Cleanup test database
     if os.path.exists("./test_portfolio.db"):
-        await engine.dispose()
+        try:
+            os.remove("./test_portfolio.db")
+        except OSError:
+            pass
+    await engine.dispose()
 
 
 @pytest.fixture

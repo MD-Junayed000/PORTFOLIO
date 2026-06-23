@@ -1,12 +1,13 @@
 import os
 import time
 import uuid
+import logging
 import httpx
 from datetime import datetime, timezone
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, text
-from typing import Optional
+from typing import Any, Dict, List, Optional
 
 from database import (
     get_db,
@@ -42,7 +43,13 @@ from models.schemas import (
     ContactInfoResponse,
 )
 from routers.auth import get_current_admin
-from services.vector_store import process_pdf, delete_document
+from services.vector_store import (
+    process_pdf,
+    delete_document,
+    make_document_id,
+    get_collection,
+    clear_portfolio_collection,
+)
 from services.cloudinary_service import (
     configure_cloudinary,
     upload_image,
@@ -61,6 +68,32 @@ ALLOWED_IMAGE_TYPES = {"image/jpeg", "image/png", "image/gif", "image/webp"}
 
 # Allowed MIME types for certificate file uploads
 ALLOWED_CERT_TYPES = {"image/jpeg", "image/png", "image/gif", "image/webp", "application/pdf"}
+
+logger = logging.getLogger(__name__)
+
+
+async def _delete_all_chunks_for_document(document) -> int:
+    """Delete every vector chunk that belongs to a Document row.
+
+    `process_pdf` builds chunk ids as ``{document_id}_chunk_{i}`` where
+    `document_id` is the slug of the ORIGINAL filename, not the Cloudinary
+    URL stored on `Document.filename`. We compute the same slug here and use
+    the public `get_collection().delete_async(where={"document_id": ...})`
+    path so we never miss orphans.
+    """
+    slug_source = document.original_name or document.filename or ""
+    document_id = make_document_id(slug_source) if slug_source else None
+    collection = get_collection()
+    if document_id:
+        await collection.delete_async(where={"document_id": document_id})
+    # If slug could not be derived, fall back to the count range using the
+    # recorded chunk_count. We add a small safety margin for reindex drift.
+    if not document_id:
+        upper = max(0, int(document.chunk_count or 0)) + 16
+        for index in range(upper):
+            chunk_id = f"unknown_doc_{document.id}_{index}"
+            delete_document(chunk_id)
+    return int(document.chunk_count or 0)
 
 
 # About
@@ -464,11 +497,16 @@ async def upload_pdf(
     # Process PDF for vector store using a temporary local copy (transient only)
     import tempfile
 
+    # Use a stable document_id derived from the original filename so the
+    # admin can later delete / reindex chunks reliably. Without this, chunks
+    # would be keyed on the random tempfile name and become unreachable.
+    document_id = make_document_id(file.filename or "")
+
     with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as tmp:
         tmp.write(content)
         tmp_path = tmp.name
     try:
-        doc_ids = process_pdf(tmp_path)
+        doc_ids = process_pdf(tmp_path, document_id=document_id)
     finally:
         try:
             os.remove(tmp_path)
@@ -511,11 +549,12 @@ async def remove_document(
     if document is None:
         raise HTTPException(status_code=404, detail="Document not found")
 
-    # Delete vector chunks associated with this document
+    # Delete ALL vector chunks for this document (the actual document_id used
+    # by process_pdf is the slug of the original filename, not the Cloudinary
+    # URL stored in `document.filename`). Falls back to a best-effort count
+    # range if the slug can't be derived.
     try:
-        for i in range(document.chunk_count):
-            chunk_id = f"{document.filename}_{i}"
-            delete_document(chunk_id)
+        await _delete_all_chunks_for_document(document)
     except Exception:
         pass  # Best effort deletion of vector chunks
 
@@ -554,6 +593,133 @@ async def update_document(
     await db.commit()
     await db.refresh(document)
     return document
+
+
+# ---------------------------------------------------------------------------
+# RAG management endpoints (manual-only pipeline)
+#
+# - GET    /api/admin/rag/status      -> aggregate stats (chunk count, doc count)
+# - DELETE /api/admin/rag/documents   -> wipe every chunk in document_chunks
+#                                        (leaves the uploaded Document rows and
+#                                        Cloudinary PDFs intact; use this for a
+#                                        full reindex after model change).
+# - POST   /api/admin/rag/reindex-all -> re-embed every Cloudinary-stored PDF
+#                                        using the current embedding model.
+# ---------------------------------------------------------------------------
+
+@router.get("/rag/status")
+async def rag_status(
+    db: AsyncSession = Depends(get_db),
+    admin: dict = Depends(get_current_admin),
+):
+    """Aggregate stats about the RAG knowledge base."""
+    docs = (
+        await db.execute(select(Document).order_by(Document.uploaded_at.desc()))
+    ).scalars().all()
+    total_chunks = sum(max(0, int(d.chunk_count or 0)) for d in docs)
+    return {
+        "document_count": len(docs),
+        "total_chunks_recorded": total_chunks,
+        "embedding_model": settings.HF_EMBEDDING_MODEL_ID,
+        "embedding_dim": settings.EMBEDDING_DIM,
+        "documents": [
+            {
+                "id": d.id,
+                "topic": d.topic,
+                "original_name": d.original_name,
+                "uploaded_at": d.uploaded_at.isoformat() if d.uploaded_at else None,
+                "chunk_count": int(d.chunk_count or 0),
+                "cloudinary_public_id": getattr(d, "cloudinary_public_id", None),
+                "filename": d.filename,
+            }
+            for d in docs
+        ],
+    }
+
+
+@router.delete("/rag/documents")
+async def rag_clear_all(
+    admin: dict = Depends(get_current_admin),
+):
+    """Wipe every vector chunk. Document rows and Cloudinary PDFs are kept."""
+    clear_portfolio_collection()
+    return {"detail": "All RAG chunks deleted. Upload PDFs again to repopulate."}
+
+
+@router.post("/rag/reindex-all")
+async def rag_reindex_all(
+    db: AsyncSession = Depends(get_db),
+    admin: dict = Depends(get_current_admin),
+):
+    """Re-download every persisted Cloudinary PDF and re-embed it.
+
+    Use this after changing the embedding model or chunking settings. The
+    Document row's `chunk_count` and `uploaded_at` are refreshed.
+    """
+    import httpx as _httpx  # local import keeps top-level imports tidy
+    import tempfile as _tempfile
+
+    docs = (
+        await db.execute(select(Document).order_by(Document.uploaded_at.asc()))
+    ).scalars().all()
+    if not docs:
+        return {"detail": "No documents to reindex.", "reindexed": 0}
+
+    reindexed: List[Dict[str, Any]] = []
+    async with _httpx.AsyncClient(timeout=120.0) as client:
+        for document in docs:
+            if not document.filename:
+                continue
+            try:
+                resp = await client.get(document.filename)
+                if resp.status_code != 200:
+                    reindexed.append(
+                        {
+                            "document_id": document.id,
+                            "status": "failed",
+                            "error": f"Cloudinary returned {resp.status_code}",
+                        }
+                    )
+                    continue
+                content = resp.content
+                with _tempfile.NamedTemporaryFile(
+                    suffix=".pdf", delete=False
+                ) as tmp:
+                    tmp.write(content)
+                    tmp_path = tmp.name
+                try:
+                    doc_ids = process_pdf(
+                        tmp_path,
+                        document_id=make_document_id(
+                            document.original_name or document.filename
+                        ),
+                    )
+                finally:
+                    try:
+                        os.remove(tmp_path)
+                    except OSError:
+                        pass
+
+                document.chunk_count = len(doc_ids)
+                document.uploaded_at = datetime.now(timezone.utc)
+                reindexed.append(
+                    {
+                        "document_id": document.id,
+                        "status": "ok",
+                        "chunks": len(doc_ids),
+                    }
+                )
+            except Exception as exc:  # pragma: no cover
+                logger.exception("Reindex failed for document %s", document.id)
+                reindexed.append(
+                    {
+                        "document_id": document.id,
+                        "status": "failed",
+                        "error": str(exc),
+                    }
+                )
+    await db.commit()
+    return {"detail": "Reindex complete.", "reindexed": reindexed}
 
 
 # Experiences

@@ -12,3 +12,4 @@ uploads/*
 *.egg-info/
 dist/
 build/
+venv/

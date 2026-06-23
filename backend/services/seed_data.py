@@ -1,36 +1,21 @@
-import gc
 import logging
-import os
-from typing import Optional
 
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 
 from database import AboutContent, Project, Skill, Research, async_session
-from services.vector_store import (
-    add_document,
-    get_collection,
-    process_pdf,
-)
 
 logger = logging.getLogger(__name__)
 
-# Path to the canonical RAG knowledge base PDF
-# Try multiple locations to handle different deployment structures
-_BACKEND_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-CANONICAL_PDF_PATHS = [
-    os.path.join(_BACKEND_DIR, "Muhammad_Junayed_RAG_Knowledge_Base.pdf"),
-    os.path.join(os.getcwd(), "Muhammad_Junayed_RAG_Knowledge_Base.pdf"),
-    os.path.join(_BACKEND_DIR, "..", "Muhammad_Junayed_RAG_Knowledge_Base.pdf"),
-]
 
-
-def _find_canonical_pdf() -> Optional[str]:
-    """Find the canonical PDF in multiple possible locations."""
-    for path in CANONICAL_PDF_PATHS:
-        if os.path.exists(path):
-            return path
-    return None
+# ---------------------------------------------------------------------------
+# Content seeding (About, Projects, Skills, Research).
+#
+# IMPORTANT: The RAG vector store is intentionally NOT seeded here.
+# The `document_chunks` table starts empty on every fresh database. An admin
+# must upload PDFs through the admin panel (POST /api/admin/upload-pdf) for
+# the chatbot to have any knowledge to retrieve. Nothing is auto-ingested.
+# ---------------------------------------------------------------------------
 
 
 async def seed_database():
@@ -220,102 +205,3 @@ async def seed_database():
 
         await session.commit()
 
-
-def seed_vector_store():
-    """Seed the vector store by auto-ingesting the canonical RAG knowledge base PDF.
-
-    If the collection is empty or has fewer than 10 documents, ingest the PDF
-    using heading-aware semantic chunking.
-    """
-    collection = get_collection()
-    current_count = collection.count()
-
-    if current_count >= 10:
-        logger.info(
-            "Vector store already has %d documents, skipping PDF ingestion.",
-            current_count,
-        )
-        return
-
-    # Find canonical PDF
-    pdf_path = _find_canonical_pdf()
-    if not pdf_path:
-        logger.warning(
-            "Canonical PDF not found in any expected location: %s. Falling back to basic profile seeding.",
-            CANONICAL_PDF_PATHS,
-        )
-        _seed_basic_profile()
-        return
-
-    # Ingest the canonical PDF with heading-aware chunking
-    logger.info("Ingesting canonical PDF: %s", pdf_path)
-    try:
-        doc_ids = process_pdf(pdf_path)
-        gc.collect()
-        logger.info(
-            "Successfully ingested canonical PDF: %d chunks created.",
-            len(doc_ids),
-        )
-    except Exception as e:
-        logger.error("Failed to ingest canonical PDF: %s", str(e))
-        _seed_basic_profile()
-
-
-def _seed_basic_profile():
-    """Fallback: seed basic profile text if PDF is not available."""
-    profile_texts = [
-        (
-            "Muhammad Junayed is an AI Engineering Enthusiast specializing in Computer Vision "
-            "and Cloud-Native ML Systems. He is a final-year ETE (Electronics and Telecommunication "
-            "Engineering) student at CUET (Chittagong University of Engineering and Technology)."
-        ),
-        (
-            "Contact: Email - mdjunayed573@gmail.com, "
-            "LinkedIn - https://www.linkedin.com/in/muhammad-junayed-ete20/, "
-            "GitHub - https://github.com/MD-Junayed000, "
-            "Kaggle - https://www.kaggle.com/muhammedjunayed"
-        ),
-        (
-            "Muhammad Junayed's AI/ML skills include PyTorch, TensorFlow, scikit-learn, "
-            "Transformers, GANs, NLP, and Computer Vision. He specializes in building "
-            "LLM Systems including RAG pipelines, OCR + retrieval, Prompt workflows, "
-            "and Agent orchestration."
-        ),
-        (
-            "Muhammad Junayed's MLOps expertise includes Airflow, ZenML, MLflow, and "
-            "Reproducible training. For backend development he uses FastAPI, Flask, "
-            "Node.js, REST APIs, and PostgreSQL."
-        ),
-        (
-            "Muhammad Junayed's projects include AroBot (Agentic RAG Multi-Modal Chatbot "
-            "for healthcare using FastAPI, OCR, LangSmith, Pinecone, Ollama), "
-            "Uber Fare Prediction (MLOps pipeline with Airflow + ZenML), "
-            "and Tabular-QA (QA over structured datasets for SemEval DataBench)."
-        ),
-        (
-            "More projects by Muhammad Junayed: WM811k Wafer Defect Recognition "
-            "(Industrial vision with CNN + Grad-CAM), Wavelet EEG + Vision Transformer "
-            "(EEG classification), Bistro-92 (Go microservices + React restaurant management), "
-            "and Graph Algorithm Visualizer."
-        ),
-        (
-            "Muhammad Junayed's research work includes his B.Sc. thesis on Hallucination "
-            "detection and mitigation in LLMs (ongoing), CNN-based defect recognition for "
-            "silicon wafer maps (ICAEEE 2024, IEEE), Vision Transformer for breast ultrasound "
-            "classification (SPICSCON 2025), and Prompt-engineering with AI tutors "
-            "(BEA 2025 / ACL workshop)."
-        ),
-        (
-            "Muhammad Junayed is proficient in Python, JavaScript, C++, PHP, and MATLAB. "
-            "For deployment, he uses Docker, AWS, and CI workflows. His frontend skills "
-            "include React, JavaScript, HTML5, and CSS3."
-        ),
-    ]
-
-    for i, text in enumerate(profile_texts):
-        add_document(
-            text=text,
-            metadata={"source": "profile", "chunk_index": i},
-            doc_id=f"profile_{i}",
-        )
-    logger.info("Seeded vector store with %d basic profile chunks (PDF fallback).", len(profile_texts))

@@ -24,6 +24,12 @@ class Settings(BaseSettings):
     HF_API_TOKEN: str = ""
     HF_MODEL_ID: str = "mistralai/Mistral-7B-Instruct-v0.3"
 
+    # Sentence embedding model served by Hugging Face Inference API.
+    # all-MiniLM-L6-v2 produces 384-dim vectors and is free on the inference API.
+    HF_EMBEDDING_MODEL_ID: str = "sentence-transformers/all-MiniLM-L6-v2"
+    EMBEDDING_DIM: int = 384
+
+    # Legacy: only kept for backwards compatibility. No longer used.
     CHROMA_PERSIST_DIR: str = "./chroma_data"
 
     # CORS: Set CORS_ORIGINS to your specific production frontend URL(s).

@@ -5,7 +5,7 @@ import os
 
 from config import settings, validate_settings_at_startup
 from services.vector_store import initialize_collection
-from services.seed_data import seed_database, seed_vector_store
+from services.seed_data import seed_database
 from services.cloudinary_service import configure_cloudinary
 from routers import auth, admin, public, chat
 
@@ -19,8 +19,11 @@ async def lifespan(app: FastAPI):
     configure_cloudinary()
     # Schema is owned by Alembic; run `alembic upgrade head` on deploy.
     initialize_collection()
+    # NOTE: RAG (pgvector) is intentionally MANUAL ONLY.
+    # The `document_chunks` table starts empty on every fresh database. An admin
+    # MUST upload PDFs through the admin panel (POST /api/admin/upload-pdf) for
+    # the chatbot to have any knowledge to retrieve. Nothing is auto-seeded.
     await seed_database()
-    seed_vector_store()
     yield
     # Shutdown
 

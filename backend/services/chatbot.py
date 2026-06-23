@@ -827,33 +827,27 @@ async def _retrieve_for_intent(
 ) -> List[Dict[str, Any]]:
     intent = intent_result.intent
 
+    # The pgvector-backed helpers in services.vector_store are already
+    # coroutine-safe (they schedule their own asyncio.run when called from
+    # a thread, and await directly when called from the event loop), so we
+    # do not need asyncio.to_thread here.
     if intent_result.section_number:
-        return await asyncio.to_thread(
-            get_by_section_numbers,
-            [intent_result.section_number],
-        )
+        return get_by_section_numbers([intent_result.section_number])
 
     section_numbers = INTENT_SECTION_NUMBERS.get(intent)
     if section_numbers:
-        return await asyncio.to_thread(
-            get_by_section_numbers,
-            list(section_numbers),
-        )
+        return get_by_section_numbers(list(section_numbers))
 
     if intent == INTENT_PROJECT_SUMMARY:
-        return await asyncio.to_thread(get_by_entity_type, "project")
+        return get_by_entity_type("project")
 
     if intent == INTENT_SKILLS:
-        return await asyncio.to_thread(get_by_entity_type, "skill")
+        return get_by_entity_type("skill")
 
     if intent == INTENT_AWARDS:
-        return await asyncio.to_thread(get_by_entity_type, "award")
+        return get_by_entity_type("award")
 
-    return await asyncio.to_thread(
-        vector_query,
-        user_message,
-        n_results=6,
-    )
+    return vector_query(user_message, n_results=6)
 
 
 # ---------------------------------------------------------------------------

@@ -178,6 +178,7 @@ class DocumentResponse(BaseModel):
     original_name: Optional[str] = None
     uploaded_at: Optional[datetime] = None
     chunk_count: int = 0
+    cloudinary_public_id: Optional[str] = None
 
     class Config:
         from_attributes = True

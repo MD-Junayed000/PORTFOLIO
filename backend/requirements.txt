@@ -16,3 +16,4 @@ numpy==1.26.4
 anyio==3.7.1
 cloudinary==1.40.0
 alembic==1.13.1
+pgvector==0.3.6
