@@ -1,3 +1,7 @@
+import logging
+from typing import Tuple
+
+from sqlalchemy.engine.url import make_url
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine, async_sessionmaker
 from sqlalchemy.orm import DeclarativeBase
 from sqlalchemy import Column, Integer, String, Text, Float, DateTime
@@ -5,22 +9,69 @@ from datetime import datetime, timezone
 from config import settings
 
 
-# Normalize the Neon pooled connection string.
-# - SQLAlchemy async needs the postgresql+asyncpg:// driver prefix.
-# - channel_binding=require is not supported by asyncpg; strip it out so
-#   the async engine does not reject the connection.
-def _build_engine_kwargs(url: str) -> dict:
+logger = logging.getLogger(__name__)
+
+
+# asyncpg (the driver SQLAlchemy uses for postgresql+asyncpg://) does NOT
+# accept libpq-style kwargs like `sslmode` or `channel_binding`. When the URL
+# contains `?sslmode=require` (the default Neon pooled string), SQLAlchemy
+# forwards every query-string parameter to asyncpg.connect() and crashes with:
+#     TypeError: connect() got an unexpected keyword argument 'sslmode'
+# We must strip those keys from the URL ourselves and enable SSL via
+# `connect_args={"ssl": True}` instead.
+#
+# This helper also:
+#   - rewrites `postgres://` -> `postgresql+asyncpg://` (Render/Heroku-style
+#     legacy strings),
+#   - drops `channel_binding=require` (asyncpg rejects it),
+#   - falls back to a local sqlite file when DATABASE_URL is empty so dev
+#     and the existing pytest suite (test_api.py) keep working,
+#   - never raises at import time; bad URLs are logged and we fall back to
+#     sqlite so the app still starts in environments without a DB.
+_ASYNCPG_INCOMPATIBLE_QUERY_KEYS = {"sslmode", "ssl", "channel_binding"}
+_DEFAULT_SQLITE_URL = "sqlite+aiosqlite:///./portfolio.db"
+
+
+def _normalize_database_url(url: str) -> Tuple[str, dict]:
+    """Return ``(clean_url, engine_kwargs)`` safe to feed to ``create_async_engine``."""
     if not url:
-        return {}
-    kwargs: dict = {"echo": False}
-    if url.startswith("postgres"):
-        # asyncpg supports sslmode via connect_args
-        if "sslmode=require" in url or "ssl=true" in url.lower():
-            kwargs["connect_args"] = {"ssl": True}
-    return kwargs
+        return _DEFAULT_SQLITE_URL, {"echo": False}
+
+    try:
+        parsed = make_url(url)
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.warning("Invalid DATABASE_URL %r (%s); falling back to sqlite.", url, exc)
+        return _DEFAULT_SQLITE_URL, {"echo": False}
+
+    # Force the asyncpg driver for postgresql URLs.
+    drivername = parsed.drivername or ""
+    if drivername in ("postgres", "postgresql"):
+        parsed = parsed.set(drivername="postgresql+asyncpg")
+    elif drivername.startswith("postgresql+") and "asyncpg" not in drivername:
+        # e.g. postgresql+psycopg2 — rewrite to asyncpg for parity with the rest
+        # of the stack (we only use async features elsewhere).
+        parsed = parsed.set(drivername="postgresql+asyncpg")
+
+    # Drop libpq-style keys that asyncpg cannot consume.
+    query = dict(parsed.query or {})
+    had_ssl = False
+    for key in _ASYNCPG_INCOMPATIBLE_QUERY_KEYS:
+        if key in query:
+            if key in ("sslmode", "ssl"):
+                had_ssl = True
+            query.pop(key, None)
+    parsed = parsed.set(query=query)
+
+    engine_kwargs: dict = {"echo": False}
+    if had_ssl and (parsed.drivername or "").startswith("postgresql+asyncpg"):
+        engine_kwargs["connect_args"] = {"ssl": True}
+
+    return parsed.render_as_string(hide_password=False), engine_kwargs
 
 
-engine = create_async_engine(settings.DATABASE_URL, **_build_engine_kwargs(settings.DATABASE_URL))
+_db_url, _engine_kwargs = _normalize_database_url(settings.DATABASE_URL)
+
+engine = create_async_engine(_db_url, **_engine_kwargs)
 async_session = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
 
 
