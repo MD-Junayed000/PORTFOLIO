@@ -1,6 +1,22 @@
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from jose import JWTError, jwt
+
+# ---------------------------------------------------------------------------
+# passlib + bcrypt version compatibility shim
+# ---------------------------------------------------------------------------
+# passlib 1.7.4 inspects ``bcrypt.__about__.__version__`` to decide which
+# bcrypt rounds format to use. In bcrypt 4.x the attribute is exposed at the
+# package level instead, so the lookup raises an AttributeError. We shim
+# ``bcrypt.__about__`` BEFORE importing passlib so the version check succeeds
+# silently. This prevents the noisy "(trapped) error reading bcrypt version"
+# warning from cluttering the startup logs.
+import bcrypt as _bcrypt
+if not hasattr(_bcrypt, "__about__"):
+    import types as _types
+
+    _bcrypt.__about__ = _types.SimpleNamespace(__version__=_bcrypt.__version__)
+
 from passlib.context import CryptContext
 from datetime import datetime, timedelta
 

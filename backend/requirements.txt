@@ -8,6 +8,7 @@ huggingface-hub==0.20.1
 PyPDF2==3.0.1
 sqlalchemy==2.0.23
 asyncpg==0.29.0
+aiosqlite==0.22.1  # Async SQLite driver; needed for local dev/tests (CI uses test_portfolio.db)
 pydantic==2.5.3
 pydantic-settings==2.1.0
 python-dotenv==1.0.0

@@ -1,7 +1,7 @@
+import logging
 from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-import os
 
 from config import settings, validate_settings_at_startup
 from services.vector_store import initialize_collection
@@ -9,7 +9,11 @@ from services.seed_data import seed_database
 from services.cloudinary_service import configure_cloudinary
 from routers import auth, admin, public, chat
 
-# Validate critical settings before the app starts accepting requests
+logger = logging.getLogger(__name__)
+
+# Validate critical settings BEFORE FastAPI starts accepting requests.
+# Runs at import time, so a misconfigured env var fails the deploy with a
+# clear error instead of an opaque "Exited with status 3".
 validate_settings_at_startup()
 
 
@@ -48,8 +52,9 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Permanent image storage lives in Cloudinary. We do NOT mount a local
-# uploads directory on Render because the disk is ephemeral.
+# All user-uploaded files (photos, CVs, certificates, RAG source PDFs) are
+# stored permanently in Cloudinary. We do not keep a local uploads/ directory
+# because the Render disk is ephemeral.
 
 # Include routers
 app.include_router(auth.router)

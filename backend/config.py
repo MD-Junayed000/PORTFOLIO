@@ -1,4 +1,6 @@
+import logging
 import os
+import sys
 import warnings
 
 from pydantic_settings import BaseSettings
@@ -119,8 +121,15 @@ def validate_settings_at_startup() -> None:
         if not settings.CLOUDINARY_API_SECRET:
             missing.append("CLOUDINARY_API_SECRET")
         if missing:
-            raise RuntimeError(
+            message = (
                 "FATAL: The following required environment variables are not set: "
                 + ", ".join(missing)
-                + ". Configure them in your Render environment."
+                + ". Configure them in your Render environment "
+                "(Dashboard -> portfolio-backend -> Environment)."
             )
+            # Write to stderr explicitly so the message shows up in the
+            # Render "Logs" tab even when uvicorn stdout is captured by the
+            # build system and the traceback is not visible to the user.
+            print(message, file=sys.stderr, flush=True)
+            logging.getLogger("config").error(message)
+            raise RuntimeError(message)
