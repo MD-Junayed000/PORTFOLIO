@@ -8,7 +8,7 @@ from fastapi.responses import JSONResponse
 
 from config import settings, validate_settings_at_startup
 from database import _is_postgres, _db_url
-from services.vector_store import initialize_collection
+from services import rag_pipeline
 from services.seed_data import seed_database
 from services.cloudinary_service import configure_cloudinary
 from routers import auth, admin, public, chat
@@ -69,12 +69,14 @@ async def lifespan(app: FastAPI):
     # ``logger.exception``) so the deploy log shows the cause instead of
     # the silent ``Exited with status 3`` we were seeing before.
     _run_alembic_upgrade()
-    logger.info("Lifespan: initializing vector collection ...")
-    initialize_collection()
-    # NOTE: RAG (pgvector) is intentionally MANUAL ONLY.
-    # The `document_chunks` table starts empty on every fresh database. An admin
-    # MUST upload PDFs through the admin panel (POST /api/admin/upload-pdf) for
-    # the chatbot to have any knowledge to retrieve. Nothing is auto-seeded.
+    logger.info("Lifespan: loading RAG knowledge base from %s ...", settings.PDF_PATH)
+    chunk_count = await rag_pipeline.initialize_from_pdf(settings.PDF_PATH)
+    logger.info("Lifespan: RAG loaded %d chunks into the in-memory store.", chunk_count)
+    # NOTE: The in-memory RAG store is automatically (re)populated at every
+    # startup from the local PDF at `settings.PDF_PATH`. After a fresh Render
+    # deploy the chatbot can immediately answer questions -- no manual upload
+    # is required. If the PDF is missing or empty, retrieval just returns []
+    # and the chat still responds (with a polite fallback message).
     logger.info("Lifespan: seeding database ...")
     await seed_database()
     logger.info("Lifespan: startup complete.")

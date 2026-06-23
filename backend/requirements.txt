@@ -5,7 +5,8 @@ passlib[bcrypt]==1.7.4
 bcrypt==4.0.1
 python-multipart==0.0.6
 huggingface-hub==0.20.1
-PyPDF2==3.0.1
+pypdf==4.2.0  # Primary PDF reader (replaces PyPDF2 for the auto-loaded knowledge base)
+PyPDF2==3.0.1  # Kept as a fallback reader; pypdf is the preferred one
 sqlalchemy==2.0.23
 asyncpg==0.29.0
 aiosqlite==0.22.1  # Async SQLite driver; needed for local dev/tests (CI uses test_portfolio.db)
@@ -17,4 +18,5 @@ numpy==1.26.4
 anyio==3.7.1
 cloudinary==1.40.0
 alembic==1.13.1
-pgvector==0.3.6
+# pgvector intentionally removed: RAG now lives entirely in-process via services/rag_pipeline.py.
+# The legacy 0002_pgvector migration is preserved as a no-op so existing databases still upgrade.

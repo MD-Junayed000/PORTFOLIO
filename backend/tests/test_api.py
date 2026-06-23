@@ -20,19 +20,27 @@ os.environ.setdefault("CLOUDINARY_API_SECRET", "test-secret")
 
 from main import app
 from database import engine
-from services.vector_store import initialize_collection
+from services import rag_pipeline
 from services.seed_data import seed_database
 
 
 @pytest.fixture(autouse=True)
 async def setup_db():
-    """Initialize database and vector store before tests.
+    """Initialize database and the in-memory RAG store before tests.
 
-    The schema is created by Alembic migrations in production; for tests we
-    simply ensure the vector collection wrapper is ready. RAG ingestion is
-    MANUAL only — no automatic seeding happens.
+    The SQL schema is created by Alembic migrations in production; for tests we
+    just ensure the RAG pipeline has a corpus loaded. In production the
+    ``main.py`` lifespan does this automatically — here we repeat it so tests
+    can run standalone (no server boot required).
     """
-    initialize_collection()
+    from config import settings as _settings
+    pdf_path = _settings.PDF_PATH
+    if os.path.exists(pdf_path):
+        await rag_pipeline.initialize_from_pdf(pdf_path)
+    else:
+        # PDF is not bundled with the test environment; skip the RAG load.
+        # Tests that depend on chat/RAG responses should be skipped separately.
+        pass
     await seed_database()
     yield
     # Cleanup test database

@@ -2,6 +2,7 @@ import logging
 import os
 import sys
 import warnings
+from pathlib import Path
 
 from pydantic_settings import BaseSettings
 from typing import List, Optional
@@ -30,6 +31,15 @@ class Settings(BaseSettings):
     # all-MiniLM-L6-v2 produces 384-dim vectors and is free on the inference API.
     HF_EMBEDDING_MODEL_ID: str = "sentence-transformers/all-MiniLM-L6-v2"
     EMBEDDING_DIM: int = 384
+
+    # Local PDF that backs the in-memory RAG pipeline. The FastAPI lifespan
+    # auto-loads this on every startup, so a fresh Render deploy always
+    # re-embeds the canonical portfolio knowledge base. Override via env to
+    # point at a different PDF in production.
+    PDF_PATH: str = str(
+        Path(__file__).resolve().parent / "pdf_rag" /
+        "Muhammad_Junayed_RAG_Knowledge_Base.pdf"
+    )
 
     # Legacy: only kept for backwards compatibility. No longer used.
     CHROMA_PERSIST_DIR: str = "./chroma_data"

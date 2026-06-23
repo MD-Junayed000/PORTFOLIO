@@ -1,6 +1,6 @@
 # Muhammad Junayed - Portfolio Website
 
-A full-stack portfolio website featuring an AI-powered chatbot using Retrieval-Augmented Generation (RAG). Built with Next.js on the frontend and FastAPI on the backend, with ChromaDB for vector storage and HuggingFace for LLM inference.
+A full-stack portfolio website featuring an AI-powered chatbot using Retrieval Augmented Generation (RAG). Built with Next.js on the frontend and FastAPI on the backend. The chatbot's vector store is an **in-process, in-memory RAG pipeline** (no external vector DB) that auto-loads a bundled knowledge-base PDF on every server start, with HuggingFace for LLM inference.
 
 ## Architecture
 
@@ -53,8 +53,8 @@ A full-stack portfolio website featuring an AI-powered chatbot using Retrieval-A
 ### Backend
 - **Framework:** FastAPI (Python 3.11)
 - **Database:** SQLite with SQLAlchemy (async)
-- **Vector DB:** ChromaDB (embedded, persistent)
-- **Embeddings:** sentence-transformers via HuggingFace
+- **Vector DB:** _None — RAG runs in-process_ (`services/rag_pipeline.py`); the knowledge-base PDF is loaded into memory at startup
+- **Embeddings:** sentence-transformers via HuggingFace Inference API
 - **LLM:** HuggingFace Inference API (default: Mistral-7B-Instruct-v0.3)
 - **Auth:** JWT-based admin authentication
 - **Deployment:** Render
@@ -167,8 +167,7 @@ Change these in your `.env` file for production.
 - `PUT /api/admin/certificates/{id}` - Update certificate
 - `DELETE /api/admin/certificates/{id}` - Delete certificate
 - `POST /api/admin/upload-photo` - Upload profile photo
-- `POST /api/admin/upload-pdf` - Upload PDF for RAG processing
-- `DELETE /api/admin/documents/{id}` - Remove document from vector store
+- `GET /api/admin/rag/status` - Inspect the in-memory RAG pipeline (chunk count, source PDF, last error)
 - `PUT /api/admin/settings` - Update runtime settings
 
 ## Deployment
@@ -217,7 +216,7 @@ python -c "from passlib.context import CryptContext; print(CryptContext(schemes=
 - [ ] Frontend loads and displays portfolio sections
 - [ ] Admin login works at `/admin`
 - [ ] Chat widget connects to backend and returns responses
-- [ ] PDF upload and RAG pipeline functions correctly
+- [ ] Chat widget returns grounded answers (the local RAG knowledge base PDF was loaded at startup — see the deploy logs for the chunk count)
 - [ ] CORS allows requests from your Vercel domain
 
 ## Project Structure
@@ -243,10 +242,12 @@ portfolio-website/
 │   │   ├── admin.py        # Admin CRUD endpoints
 │   │   ├── public.py       # Public read endpoints
 │   │   └── chat.py         # Chatbot endpoint
-│   ├── services/           # Business logic
-│   │   ├── chatbot.py      # RAG chatbot service
-│   │   ├── vector_store.py # ChromaDB operations
-│   │   └── seed_data.py    # Initial data seeding
+â”‚   â”œâ”€â”€ services/           # Business logic
+â”‚   â”‚   â”œâ”€â”€ chatbot.py      # RAG chatbot service
+â”‚   â”‚   â”œâ”€â”€ rag_pipeline.py # In-process vector store + cosine retrieval
+â”‚   â”‚   â”œâ”€â”€ vector_store.py # Compatibility shim around rag_pipeline
+â”‚   â”‚   â””â”€â”€ seed_data.py    # Initial data seeding
+â”‚   â”œâ”€â”€ pdf_rag/            # Bundled knowledge-base PDF (auto-loaded)
 │   ├── models/             # Pydantic schemas
 │   ├── tests/              # pytest test suite
 │   ├── uploads/            # Uploaded files (gitignored)

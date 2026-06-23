@@ -11,10 +11,12 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 # Content seeding (About, Projects, Skills, Research).
 #
-# IMPORTANT: The RAG vector store is intentionally NOT seeded here.
-# The `document_chunks` table starts empty on every fresh database. An admin
-# must upload PDFs through the admin panel (POST /api/admin/upload-pdf) for
-# the chatbot to have any knowledge to retrieve. Nothing is auto-ingested.
+# NOTE: RAG lives in services/rag_pipeline.py and is auto-loaded from
+# settings.PDF_PATH inside the FastAPI lifespan in main.py — so this file no
+# longer touches the vector store at all. There is no admin upload endpoint
+# for PDFs anymore; the chatbot's knowledge base is the local file
+# `backend/pdf_rag/Muhammad_Junayed_RAG_Knowledge_Base.pdf`, which is reloaded
+# automatically on every Render boot/redeploy.
 # ---------------------------------------------------------------------------
 
 

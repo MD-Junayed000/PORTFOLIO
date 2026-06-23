@@ -8,6 +8,10 @@ services:
     # do not declare a preDeployCommand. Render-managed Postgres (Neon) is
     # external to Render, so tables are not auto-created.
     startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT
+    # NOTE: The FastAPI lifespan (see backend/main.py) auto-loads the local
+    # knowledge-base PDF (settings.PDF_PATH) into the in-process RAG pipeline
+    # every time the service boots — so re-deployments always start with a
+    # warm, fresh knowledge base. No external vector store is required.
     healthCheckPath: /api/health
     envVars:
       - key: SECRET_KEY
