@@ -84,4 +84,34 @@ async def run_migrations_online() -> None:
 if context.is_offline_mode():
     run_migrations_offline()
 else:
-    asyncio.run(run_migrations_online())
+    # `asyncio.run` cannot be used when there is already a running event loop
+    # (e.g. when this script is invoked from inside the FastAPI app's
+    # lifespan, where the loop is the one driving uvicorn). In that situation
+    # `asyncio.run` raises a DeprecationWarning and silently drops the
+    # coroutine -- which is exactly what we saw on Render. Detect the case
+    # and use a fresh, dedicated loop in a worker thread instead so the
+    # migrations always run to completion regardless of caller context.
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        # No running loop: safe to use asyncio.run.
+        asyncio.run(run_migrations_online())
+    else:
+        # A loop is already running in this thread (FastAPI lifespan hook).
+        # Run the migrations in a fresh loop on a worker thread so we do not
+        # interfere with the caller's loop.
+        import threading
+
+        _migration_error: list = []
+
+        def _runner() -> None:
+            try:
+                asyncio.run(run_migrations_online())
+            except Exception as exc:  # pragma: no cover - defensive
+                _migration_error.append(exc)
+
+        t = threading.Thread(target=_runner, name="alembic-upgrade", daemon=True)
+        t.start()
+        t.join()
+        if _migration_error:
+            raise _migration_error[0]
