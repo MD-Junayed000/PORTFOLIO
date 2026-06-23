@@ -104,14 +104,25 @@ async def create_contact_message(
     background_tasks: BackgroundTasks,
     db: AsyncSession = Depends(get_db),
 ):
-    message = ContactMessage(
-        name=data.name,
-        email=data.email,
-        message=data.message,
-    )
-    db.add(message)
-    await db.commit()
-    await db.refresh(message)
+    try:
+        message = ContactMessage(
+            name=data.name,
+            email=data.email,
+            message=data.message,
+        )
+        db.add(message)
+        await db.commit()
+        await db.refresh(message)
+    except Exception:
+        # Make the failure loud in the Render logs so the difference between
+        # CORS (browser-side, no server log) and a real DB error is obvious.
+        import logging
+        logging.getLogger(__name__).exception(
+            "Contact-message insert failed for name=%r email=%r",
+            data.name,
+            data.email,
+        )
+        raise
 
     # Read notification emails from DB (if configured by admin)
     result = await db.execute(select(ContactInfo))

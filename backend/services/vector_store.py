@@ -76,12 +76,14 @@ PARENT_HEADINGS = {
 
 async def _embed_texts(
     texts: List[str],
-    timeout: float = 30.0,
+    timeout: float = 90.0,
 ) -> List[List[float]]:
     """Call HF feature-extraction to embed a batch of texts.
 
-    Returns zero-vectors if HF_API_TOKEN is empty so the chat still works
-    (it just falls back to metadata/keyword search).
+    Returns zero-vectors if HF_API_TOKEN is empty OR every retry fails, so
+    the chat still works (it just falls back to metadata/keyword search).
+    The fallback is always a properly-shaped 384-dim vector so the SQL
+    ``vector(384)`` column never rejects the insert.
     """
     if not texts:
         return []
@@ -96,24 +98,77 @@ async def _embed_texts(
     headers = {"Authorization": f"Bearer {settings.HF_API_TOKEN}"}
     payload = {"inputs": texts, "options": {"wait_for_model": True}}
 
-    async with httpx.AsyncClient(timeout=timeout) as client:
-        resp = await client.post(url, json=payload, headers=headers)
-        if resp.status_code == 503:
-            await asyncio.sleep(3)
-            resp = await client.post(url, json=payload, headers=headers)
-        if resp.status_code != 200:
-            logger.error(
-                "HF embedding failed (%s): %s",
-                resp.status_code,
-                resp.text[:300],
+    # Retries handle HF cold-starts (503), transient gateway errors (502/504),
+    # deprecation responses (410) and timeouts. We bound total wait so the
+    # endpoint never hangs the request thread.
+    last_status: Optional[int] = None
+    last_body: str = ""
+    for attempt in range(3):
+        try:
+            async with httpx.AsyncClient(timeout=timeout) as client:
+                resp = await client.post(url, json=payload, headers=headers)
+        except httpx.TimeoutException as exc:
+            last_status = None
+            last_body = f"timeout: {exc!r}"
+            logger.warning(
+                "HF embedding timeout on attempt %d/3; retrying...", attempt + 1
             )
-            return [[0.0] * settings.EMBEDDING_DIM for _ in texts]
+            await asyncio.sleep(2 + attempt * 2)
+            continue
+        except httpx.HTTPError as exc:
+            last_status = None
+            last_body = f"http-error: {exc!r}"
+            logger.warning(
+                "HF embedding network error on attempt %d/3: %s",
+                attempt + 1,
+                exc,
+            )
+            await asyncio.sleep(2 + attempt * 2)
+            continue
 
-    data = resp.json()
-    # HF returns either a single vector or list-of-vectors.
-    if data and isinstance(data[0], list) and data and isinstance(data[0][0], list):
-        return data
-    return [data] if data else [[0.0] * settings.EMBEDDING_DIM for _ in texts]
+        if resp.status_code == 200:
+            data = resp.json()
+            # HF returns either a single vector or list-of-vectors.
+            if (
+                data
+                and isinstance(data, list)
+                and data
+                and isinstance(data[0], list)
+                and data[0]
+                and isinstance(data[0][0], list)
+            ):
+                return data
+            if data and isinstance(data, list) and isinstance(data[0], (int, float)):
+                return [data]
+            # Unexpected shape — treat as failure and retry once.
+            last_status = resp.status_code
+            last_body = (resp.text or "")[:200]
+            logger.warning(
+                "HF embedding returned unexpected payload shape on attempt %d/3",
+                attempt + 1,
+            )
+            await asyncio.sleep(2)
+            continue
+
+        last_status = resp.status_code
+        last_body = (resp.text or "")[:200]
+        # 401/403: token invalid — don't waste retries.
+        if resp.status_code in (401, 403):
+            break
+        # 410/404: model gone — don't waste retries.
+        if resp.status_code in (404, 410):
+            break
+        # 503 (model loading) / 429 (rate limit) / 5xx: retry with backoff.
+        await asyncio.sleep(2 + attempt * 2)
+
+    logger.error(
+        "HF embedding failed after retries (status=%s, body=%s); "
+        "falling back to zero embeddings for %d chunk(s).",
+        last_status,
+        last_body,
+        len(texts),
+    )
+    return [[0.0] * settings.EMBEDDING_DIM for _ in texts]
 
 
 def _format_embedding(vec: List[float]) -> str:
@@ -329,21 +384,32 @@ class _PgCollection:
 
     # ---- sync shims for backwards compatibility ------------------------
     # (chatbot.py uses asyncio.to_thread; admin router may still call sync)
+    #
+    # Important: these shims MUST NOT call ``asyncio.run`` unconditionally.
+    # When the FastAPI request handler is itself ``async`` (as it is in the
+    # chat endpoint, which ``await``s ``_retrieve_for_intent``), there is
+    # already a running event loop. ``asyncio.run`` then raises
+    # ``RuntimeError: asyncio.run() cannot be called from a running event
+    # loop``, the coroutine is dropped without being awaited, and Python
+    # logs ``RuntimeWarning: coroutine '_PgCollection.get_async' was never
+    # awaited`` -- exactly the warning we saw on Render. Use the shared
+    # ``_run`` helper which detects the running loop and schedules onto a
+    # worker thread when needed.
 
     def upsert(self, *args: Any, **kwargs: Any) -> None:
-        asyncio.run(self.upsert_async(*args, **kwargs))
+        _run(self.upsert_async(*args, **kwargs))
 
     def add(self, *args: Any, **kwargs: Any) -> None:
         self.upsert(*args, **kwargs)
 
     def get(self, *args: Any, **kwargs: Any) -> Dict[str, Any]:
-        return asyncio.run(self.get_async(*args, **kwargs))
+        return _run(self.get_async(*args, **kwargs))
 
     def delete(self, *args: Any, **kwargs: Any) -> None:
-        asyncio.run(self.delete_async(*args, **kwargs))
+        _run(self.delete_async(*args, **kwargs))
 
     def count(self) -> int:
-        return asyncio.run(self.count_async())
+        return _run(self.count_async())
 
 
 def _doc_id_from_chunk(chunk_id: str) -> str:
