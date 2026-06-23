@@ -244,6 +244,50 @@ async def delete_research(
 
 
 # Certificates
+@router.get("/certificates", response_model=List[CertificateResponse])
+async def admin_list_certificates(
+    db: AsyncSession = Depends(get_db),
+    admin: dict = Depends(get_current_admin),
+):
+    """Return the raw Cloudinary URLs (no proxy rewrite) for the admin UI.
+
+    The public ``GET /api/certificates`` rewrites each ``file_path`` to a
+    proxy URL so the public site can render the PDF inline. The admin
+    form, however, needs the *original* Cloudinary URL — otherwise editing
+    a certificate would overwrite the stored public_id with the proxy
+    path and break future uploads.
+    """
+    result = await db.execute(select(Certificate))
+    return result.scalars().all()
+
+
+@router.get("/about", response_model=AboutContentResponse)
+async def admin_get_about(
+    db: AsyncSession = Depends(get_db),
+    admin: dict = Depends(get_current_admin),
+):
+    """Return the raw ``cv_file_path`` (no proxy rewrite) for the admin UI."""
+    result = await db.execute(select(AboutContent))
+    about = result.scalar_one_or_none()
+    if about is None:
+        return AboutContentResponse(
+            id=0,
+            bio="Profile not yet configured.",
+            title="Portfolio",
+            photo_url=None,
+            education=None,
+            focus_area=None,
+            subtitle=None,
+            linkedin_url=None,
+            github_url=None,
+            scholar_url=None,
+            extra_links=None,
+            cv_file_path=None,
+            project_display_count=6,
+        )
+    return about
+
+
 @router.post("/certificates", response_model=CertificateResponse)
 async def create_certificate(
     data: CertificateBase,

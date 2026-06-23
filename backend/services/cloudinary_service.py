@@ -7,11 +7,13 @@ the CLOUDINARY_* environment variables on Render.
 from __future__ import annotations
 
 import logging
+import re
 import secrets
 from typing import Optional, Tuple
 
 import cloudinary
 import cloudinary.uploader
+import cloudinary.utils
 from cloudinary.exceptions import Error as CloudinaryError
 
 from config import settings
@@ -79,7 +81,7 @@ def upload_pdf(
     folder: str = "portfolio/pdfs",
     original_filename: Optional[str] = None,
 ) -> Tuple[str, str]:
-    """Upload a PDF as a Cloudinary 'raw' resource.
+    """Upload a PDF as a publicly readable Cloudinary 'raw' resource.
 
     Returns (secure_url, public_id). For ``resource_type="raw"`` Cloudinary
     serves the file under the URL path as-is and serves ``Content-Type`` based
@@ -87,6 +89,11 @@ def upload_pdf(
     the browser receives a generic ``application/octet-stream`` blob and the
     file is saved without a ``.pdf`` suffix — so we always append the original
     extension (defaulting to ``.pdf``) to the generated token.
+
+    We also force ``type="upload"`` and ``access_mode="public"`` so the file
+    can be fetched by any browser without an authenticated signature. Without
+    these, the asset defaults to authenticated delivery and the public site
+    gets HTTP 401 when trying to render the PDF inline.
     """
     configure_cloudinary()
     extension = "pdf"
@@ -101,6 +108,8 @@ def upload_pdf(
             public_id=public_id,
             folder=folder,
             resource_type="raw",
+            type="upload",
+            access_mode="public",
             overwrite=True,
             unique_filename=False,
             use_filename=False,
@@ -139,3 +148,58 @@ def delete_asset(public_id: str, resource_type: str = "image") -> bool:
     except Exception as exc:  # pragma: no cover - defensive
         logger.warning("Unexpected error deleting Cloudinary asset %s: %s", public_id, exc)
         return False
+
+
+def extract_public_id_from_url(url: Optional[str], resource_type: str = "raw") -> Optional[str]:
+    """Recover the Cloudinary ``public_id`` from a stored ``secure_url``.
+
+    We strip the version segment (``v1234567890/``), the file extension
+    and the resource-type folder prefix so the result is exactly what the
+    Cloudinary SDK needs to sign a new download URL.
+
+    Example raw URL:
+        https://res.cloudinary.com/<cloud>/raw/upload/v123/portfolio/pdfs/abc.pdf
+        -> portfolio/pdfs/abc
+    """
+    if not url:
+        return None
+    # Match res.cloudinary.com/<cloud>/<resource_type>/<delivery_type>/...
+    match = re.match(
+        r"^https?://res\.cloudinary\.com/[^/]+/"
+        r"(?P<rtype>image|video|raw|file)/"
+        r"(?P<dtype>upload|authenticated|private)/"
+        r"(?:v\d+/)?"
+        r"(?P<pid>.+?)(?:\.[A-Za-z0-9]{1,5})?$",
+        url.strip(),
+    )
+    if not match:
+        return None
+    if match.group("rtype") != resource_type:
+        return None
+    return match.group("pid")
+
+
+def sign_raw_download_url(public_id: str, ttl_seconds: int = 300) -> Optional[str]:
+    """Build a short-lived signed URL for a ``raw`` asset.
+
+    The signed URL is what we hand to the browser via the proxy endpoint.
+    Using ``private_download_url`` (with ``resource_type="raw"``) keeps the
+    asset private in Cloudinary while still being publicly fetchable through
+    our backend proxy for ``ttl_seconds``.
+    """
+    if not public_id:
+        return None
+    configure_cloudinary()
+    try:
+        import time
+
+        expires_at = int(time.time()) + ttl_seconds
+        return cloudinary.utils.private_download_url(
+            public_id,
+            format=None,
+            resource_type="raw",
+            expires_at=expires_at,
+        )
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.warning("Failed to sign Cloudinary raw URL for %s: %s", public_id, exc)
+        return None

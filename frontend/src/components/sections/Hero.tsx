@@ -5,7 +5,7 @@ import { motion } from "framer-motion";
 import { ArrowDown, Download } from "lucide-react";
 import Image from "next/image";
 import { GithubIcon, LinkedinIcon, GoogleScholarIcon } from "@/components/icons";
-import api, { API_BASE_URL } from "@/lib/api";
+import api, { absolutizeUrl } from "@/lib/api";
 import { About } from "@/types";
 
 const defaultSocialLinks = [
@@ -64,18 +64,19 @@ export default function Hero() {
     about?.focus_area ||
     "Specializing in Computer Vision, NLP, and Cloud-Native ML Systems. Building intelligent solutions at the intersection of research and production.";
 
-  const rawCvUrl = about?.cv_file_path || "/Muhammad_Junayed_CV.pdf";
-  // If the CV URL is a backend upload path, prepend the API base URL
-  const cvUrl = rawCvUrl.startsWith("/uploads/")
-    ? `${API_BASE_URL}${rawCvUrl}`
-    : rawCvUrl;
+  // The backend may return a proxy URL (``/api/files/raw?public_id=...``)
+  // for raw resources, a legacy local ``/uploads/...`` path, or an
+  // absolute Cloudinary URL. ``absolutizeUrl`` normalises all three so the
+  // browser can actually open the file.
+  const cvUrl =
+    absolutizeUrl(about?.cv_file_path) ?? "/Muhammad_Junayed_CV.pdf";
   // Suggest a friendly filename for the download so the browser saves it as
   // a real .pdf even if the upstream CDN omits Content-Disposition.
   const cvDownloadName = "Muhammad_Junayed_CV.pdf";
 
   // Profile image: use API photo_url if available, fallback to static image
-  const profileImageSrc = about?.photo_url 
-    ? (about.photo_url.startsWith("/uploads/") ? `${API_BASE_URL}${about.photo_url}` : about.photo_url)
+  const profileImageSrc = about?.photo_url
+    ? absolutizeUrl(about.photo_url) ?? about.photo_url
     : "/images/profile.png";
 
   return (

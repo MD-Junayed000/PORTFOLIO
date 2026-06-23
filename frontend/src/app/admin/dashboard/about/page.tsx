@@ -23,7 +23,7 @@ export default function AdminAbout() {
 
   useEffect(() => {
     api
-      .get("/api/about")
+      .get("/api/admin/about")
       .then((res) => {
         setBio(res.data.bio || "");
         setTitle(res.data.title || "");

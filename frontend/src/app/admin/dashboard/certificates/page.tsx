@@ -47,7 +47,7 @@ export default function AdminCertificates() {
 
   const fetchCertificates = () => {
     api
-      .get("/api/certificates")
+      .get("/api/admin/certificates")
       .then((res) => setCertificates(res.data))
       .catch(() => {})
       .finally(() => setLoading(false));
