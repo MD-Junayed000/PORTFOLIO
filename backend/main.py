@@ -1,7 +1,10 @@
 import logging
+import re
 from contextlib import asynccontextmanager
-from fastapi import FastAPI
+
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 
 from config import settings, validate_settings_at_startup
 from database import _is_postgres, _db_url
@@ -99,6 +102,50 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+# ---------------------------------------------------------------------------
+# Global exception handlers
+# ---------------------------------------------------------------------------
+# FastAPI's CORSMiddleware only adds the ``Access-Control-Allow-Origin`` header
+# to responses that flow back through the middleware stack. When an unhandled
+# exception escapes a route handler (e.g. an asyncpg / pgvector / HF embedding
+# error inside ``/api/admin/upload-pdf``), Starlette's ``ServerErrorMiddleware``
+# builds a plain ``text/plain`` 500 response that *bypasses* CORSMiddleware.
+# The browser then reports the failure as a CORS error, even though the real
+# problem is on the server.
+#
+# The handler below intercepts every uncaught exception, logs the traceback,
+# and returns a JSON 500 with CORS headers manually re-attached. The Origin
+# header is echoed back (when present) so credentialed XHR stays valid.
+@app.exception_handler(Exception)
+async def _unhandled_exception_handler(request: Request, exc: Exception):
+    logger.exception(
+        "Unhandled exception for %s %s", request.method, request.url.path
+    )
+    origin = request.headers.get("origin")
+    headers = {}
+    if origin and _is_origin_allowed(origin):
+        headers["Access-Control-Allow-Origin"] = origin
+        headers["Access-Control-Allow-Credentials"] = "true"
+        headers["Vary"] = "Origin"
+    return JSONResponse(
+        status_code=500,
+        content={"detail": "Internal server error. See server logs."},
+        headers=headers,
+    )
+
+
+def _is_origin_allowed(origin: str) -> bool:
+    """Mirror CORSMiddleware's allow_origins + allow_origin_regex for 500s."""
+    if not origin:
+        return False
+    if origin in settings.CORS_ORIGINS:
+        return True
+    pattern = settings.CORS_ORIGIN_REGEX
+    if pattern and re.match(pattern, origin):
+        return True
+    return False
 
 # All user-uploaded files (photos, CVs, certificates, RAG source PDFs) are
 # stored permanently in Cloudinary. We do not keep a local uploads/ directory

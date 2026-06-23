@@ -480,8 +480,22 @@ async def upload_pdf(
     if not file.filename or not file.filename.lower().endswith(".pdf"):
         raise HTTPException(status_code=400, detail="Only PDF files are accepted")
 
-    # Read file content with size limit
-    content = await file.read()
+    # Read file content with size limit. ``UploadFile.read()`` streams the
+    # multipart body into a SpooledTemporaryFile that spills to disk on
+    # Render's ephemeral volume. Surface read failures as a 400 instead of
+    # letting the underlying OSError bubble up as a bare 500 (which the
+    # browser would mis-report as a CORS failure).
+    try:
+        content = await file.read()
+    except Exception:
+        logger.exception(
+            "Failed to read uploaded PDF body for filename=%r",
+            file.filename,
+        )
+        raise HTTPException(
+            status_code=400,
+            detail="Could not read the uploaded file. It may be too large or corrupt.",
+        )
     if len(content) > settings.MAX_PDF_SIZE:
         raise HTTPException(
             status_code=400,
