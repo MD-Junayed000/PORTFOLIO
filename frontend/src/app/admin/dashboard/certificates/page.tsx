@@ -11,9 +11,19 @@ interface CertificateForm {
   issuer: string;
   date: string;
   file_path: string;
+  // Cloudinary public_id of the uploaded file. Captured from
+  // /api/admin/upload-certificate so the backend can re-sign the URL
+  // on the public proxy without having to regex-parse the secure_url.
+  file_public_id: string;
 }
 
-const emptyForm: CertificateForm = { name: "", issuer: "", date: "", file_path: "" };
+const emptyForm: CertificateForm = {
+  name: "",
+  issuer: "",
+  date: "",
+  file_path: "",
+  file_public_id: "",
+};
 
 export default function AdminCertificates() {
   const [certificates, setCertificates] = useState<Certificate[]>([]);
@@ -35,7 +45,13 @@ export default function AdminCertificates() {
       const res = await api.post("/api/admin/upload-certificate", formData, {
         headers: { "Content-Type": "multipart/form-data" },
       });
-      setForm({ ...form, file_path: res.data.file_url });
+      setForm({
+        ...form,
+        file_path: res.data.file_url,
+        // Persist the Cloudinary public_id alongside the secure_url so the
+        // public proxy endpoint can sign a download URL for the file.
+        file_public_id: res.data.public_id || "",
+      });
       toast.success("File uploaded");
     } catch {
       toast.error("Upload failed");
@@ -66,6 +82,7 @@ export default function AdminCertificates() {
         issuer: form.issuer,
         date: form.date,
         file_path: form.file_path || null,
+        file_public_id: form.file_public_id || null,
       };
       if (editingId) {
         await api.put(`/api/admin/certificates/${editingId}`, payload);
@@ -91,6 +108,7 @@ export default function AdminCertificates() {
       issuer: cert.issuer,
       date: cert.date,
       file_path: cert.file_path || "",
+      file_public_id: cert.file_public_id || "",
     });
     setEditingId(cert.id);
     setShowForm(true);

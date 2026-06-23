@@ -75,9 +75,10 @@ export default function AdminProjects() {
 
   useEffect(() => {
     fetchProjects();
-    // Load display count from server (about settings)
+    // Load display count from the admin endpoint so the raw cv_file_path
+    // stays out of the read path entirely (see handleDisplayCountSave).
     api
-      .get("/api/about")
+      .get("/api/admin/about")
       .then((res) => {
         const count = res.data?.project_display_count;
         if (count && count > 0) setDisplayCount(count);
@@ -87,8 +88,13 @@ export default function AdminProjects() {
 
   const handleDisplayCountSave = async () => {
     try {
-      // Fetch current about data, then update with new display count
-      const aboutRes = await api.get("/api/about");
+      // Use the *admin* about endpoint so we get the original
+      // ``cv_file_path`` (a Cloudinary secure_url) instead of the rewritten
+      // proxy URL the public endpoint returns. Writing the proxy URL back
+      // to the DB would clobber the Cloudinary reference and break the
+      // next public read — the proxy regex only matches real Cloudinary
+      // URLs, not ``/api/files/raw?public_id=...``.
+      const aboutRes = await api.get("/api/admin/about");
       const aboutData = aboutRes.data;
       await api.put("/api/admin/about", {
         bio: aboutData.bio || "Profile not yet configured.",
@@ -102,6 +108,7 @@ export default function AdminProjects() {
         scholar_url: aboutData.scholar_url,
         extra_links: aboutData.extra_links,
         cv_file_path: aboutData.cv_file_path,
+        cv_public_id: aboutData.cv_public_id,
         project_display_count: displayCount,
       });
       toast.success(`Display count set to ${displayCount}`);

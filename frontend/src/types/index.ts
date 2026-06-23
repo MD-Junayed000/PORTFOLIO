@@ -61,6 +61,10 @@ export interface Certificate {
   issuer: string;
   date: string;
   file_path: string | null;
+  // Cloudinary public_id (e.g. "portfolio/pdfs/portfolio/pdf/<token>.pdf").
+  // Required so the public site can build a proxy URL that opens the
+  // raw PDF inline instead of getting a 401 from the private CDN.
+  file_public_id?: string | null;
 }
 
 export interface ChatMessage {

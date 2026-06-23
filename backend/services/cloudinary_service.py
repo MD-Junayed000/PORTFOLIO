@@ -186,6 +186,14 @@ def sign_raw_download_url(public_id: str, ttl_seconds: int = 300) -> Optional[st
     Using ``private_download_url`` (with ``resource_type="raw"``) keeps the
     asset private in Cloudinary while still being publicly fetchable through
     our backend proxy for ``ttl_seconds``.
+
+    NOTE: Cloudinary's ``raw/download`` endpoint **requires** the file format
+    (e.g. ``pdf``) in the signed request. Passing ``format=None`` produces a
+    signed URL that resolves to a 401/empty response and Chrome's PDF viewer
+    crashes with "Failed to load PDF document". We therefore sniff the
+    extension from the public_id and pass it explicitly. Legacy callers
+    that store the public_id without an extension default to ``pdf`` —
+    certificates and the CV are always PDFs, so this is safe in practice.
     """
     if not public_id:
         return None
@@ -193,10 +201,25 @@ def sign_raw_download_url(public_id: str, ttl_seconds: int = 300) -> Optional[st
     try:
         import time
 
+        # Sniff format from the public_id's extension. ``.pdf`` is the
+        # common case (CV + certificates); images are uploaded with
+        # resource_type="image" so they never reach this helper.
+        format_value: Optional[str] = None
+        if "." in public_id:
+            candidate = public_id.rsplit(".", 1)[-1].strip().lower()
+            if candidate.isalnum() and 1 <= len(candidate) <= 5:
+                format_value = candidate
+        if format_value is None:
+            # No extension on the public_id (legacy rows from before the
+            # public_id column was added) — assume pdf. Almost every raw
+            # asset in this app IS a pdf; if a jpg/png slips through the
+            # proxy will still serve bytes, just with a pdf mime-type.
+            format_value = "pdf"
+
         expires_at = int(time.time()) + ttl_seconds
         return cloudinary.utils.private_download_url(
             public_id,
-            format=None,
+            format=format_value,
             resource_type="raw",
             expires_at=expires_at,
         )

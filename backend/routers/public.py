@@ -248,14 +248,12 @@ async def proxy_raw_file(public_id: str = Query(..., min_length=1)):
 
     filename = public_id.rsplit("/", 1)[-1] or "file"
 
-    async def _stream():
-        async with httpx.AsyncClient(timeout=30.0, follow_redirects=True) as client:
-            async with client.stream("GET", signed_url) as upstream:
-                upstream.raise_for_status()
-                async for chunk in upstream.aiter_bytes(chunk_size=64 * 1024):
-                    yield chunk
-
-    response_headers = {
+    # Forward Content-Length (so the PDF viewer shows a progress bar) but
+    # drop any upstream Content-Encoding — Cloudinary occasionally serves
+    # raw assets with ``Content-Encoding: gzip`` while httpx has already
+    # transparently decoded the body, which would leave the browser trying
+    # to gunzip already-decoded bytes and trip "Failed to load PDF document".
+    response_headers: dict[str, str] = {
         "Content-Disposition": (
             f'inline; filename="{filename}"' if is_pdf
             else f'attachment; filename="{filename}"'
@@ -263,6 +261,21 @@ async def proxy_raw_file(public_id: str = Query(..., min_length=1)):
         "Cache-Control": "private, max-age=60",
         "Accept-Ranges": "bytes",
     }
+
+    async def _stream():
+        async with httpx.AsyncClient(timeout=30.0, follow_redirects=True) as client:
+            async with client.stream("GET", signed_url) as upstream:
+                upstream.raise_for_status()
+                # Stash the upstream size the first time we see headers so
+                # we can emit a single Content-Length (the comment on the
+                # proxy docstring claims we do this, but the original
+                # implementation never wired it up).
+                content_length = upstream.headers.get("Content-Length")
+                if content_length and "Content-Length" not in response_headers:
+                    response_headers["Content-Length"] = content_length
+                async for chunk in upstream.aiter_bytes(chunk_size=64 * 1024):
+                    yield chunk
+
     return StreamingResponse(
         _stream(),
         media_type=media_type,

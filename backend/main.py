@@ -79,6 +79,42 @@ async def lifespan(app: FastAPI):
     # and the chat still responds (with a polite fallback message).
     logger.info("Lifespan: seeding database ...")
     await seed_database()
+    # Heal legacy rows that were uploaded before we started tracking the
+    # Cloudinary ``public_id`` in its own column. Without this, the public
+    # proxy has to regex-parse the secure_url on every request — and the
+    # proxy already lives behind Cloudinary auth, so a single misparse
+    # breaks every CV / certificate link on the site. Safe to re-run on
+    # every boot: rows that already have a public_id are skipped.
+    try:
+        from database import async_session, AboutContent, Certificate
+        from sqlalchemy import select
+        from services.cloudinary_service import extract_public_id_from_url
+
+        async with async_session() as session:
+            fixed = 0
+            cert_result = await session.execute(select(Certificate))
+            for cert in cert_result.scalars().all():
+                if cert.file_public_id or not cert.file_path:
+                    continue
+                parsed = extract_public_id_from_url(cert.file_path, resource_type="raw")
+                if parsed:
+                    cert.file_public_id = parsed
+                    fixed += 1
+            about_result = await session.execute(select(AboutContent))
+            about = about_result.scalar_one_or_none()
+            if about and not about.cv_public_id and about.cv_file_path:
+                parsed = extract_public_id_from_url(about.cv_file_path, resource_type="raw")
+                if parsed:
+                    about.cv_public_id = parsed
+                    fixed += 1
+            if fixed:
+                await session.commit()
+            logger.info("Lifespan: backfilled %d Cloudinary public_ids.", fixed)
+    except Exception:
+        # Never let a one-shot cleanup block startup; the proxy fallback
+        # (regex parse of the secure_url) still works without it.
+        logger.exception("Lifespan: public_id backfill failed (non-fatal)")
+
     logger.info("Lifespan: startup complete.")
     yield
     # Shutdown
