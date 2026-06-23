@@ -33,6 +33,7 @@ from services.email import send_contact_notification
 from config import settings
 from services.cloudinary_service import (
     build_image_url,
+    build_signed_image_url,
     extract_public_id_from_url,
 )
 
@@ -279,56 +280,62 @@ async def proxy_raw_file(public_id: str = Query(..., min_length=1)):
         "Accept-Ranges": "bytes",
     }
 
-    def _build_authed_url(url: str) -> str:
-        """Append Cloudinary ``api_key`` / ``api_secret`` so a server-side
-        fetch can read assets behind account-level access control.
+    def _signed_url_for(pid: str) -> Optional[str]:
+        """Generate a Cloudinary-signed delivery URL for this public_id.
 
-        The browser hits this proxy anonymously; Cloudinary's account has
-        strict access control on ``raw/upload`` (the live screenshots show
-        401 for legacy PDFs). The backend, however, *is* allowed to access
-        the asset — Cloudinary accepts the ``api_key`` / ``api_secret``
-        query params on delivery URLs as a back-channel authentication
-        mechanism for server-to-server fetches.
+        Used as the fallback when the unsigned ``/image/upload/`` URL is
+        rejected by the account's access-control rule. The Cloudinary SDK
+        adds an HMAC ``signature=`` query param that the CDN accepts from
+        trusted server-to-server callers. The signature is short-lived
+        (default 1h) and is scoped to the public_id + the transformation
+        params we pass in, so the URL is not a long-lived secret.
         """
-        if not (settings.CLOUDINARY_API_KEY and settings.CLOUDINARY_API_SECRET):
-            return url
-        sep = "&" if "?" in url else "?"
-        return (
-            f"{url}{sep}api_key={settings.CLOUDINARY_API_KEY}"
-            f"&api_secret={settings.CLOUDINARY_API_SECRET}"
-        )
+        return build_signed_image_url(pid, ext="pdf")
 
     async def _stream():
         async with httpx.AsyncClient(timeout=30.0, follow_redirects=True) as client:
-            # Prefer the public image variant; if it 404s, the asset is a
-            # legacy raw upload — try that path instead. The raw fallback
-            # may be gated by account access control (401/403), in which
-            # case we retry it with api_key/api_secret as a server-side
-            # authenticated fetch — the backend is a trusted caller.
+            # Try the URL variants in this order:
+            #   1. /image/upload/<pid>.pdf  (unsigned; works when the
+            #      account allows public image delivery)
+            #   2. /image/upload/<pid>.pdf  (signed via the SDK; works
+            #      when an access-control rule blocks the unsigned
+            #      variant — the live account is configured this way)
+            #   3. /raw/upload/<pid>.pdf    (legacy raw upload; if the
+            #      asset was uploaded before the image-format migration)
+            #   4. /raw/upload/<pid>.pdf    (signed legacy fallback)
             last_status: Optional[int] = None
-            for url in (image_url, raw_url):
-                # First pass: anonymous fetch (matches the old behaviour).
-                # Second pass (raw only): server-side authenticated fetch
-                # for accounts that gate raw/upload behind an access rule.
-                candidate_urls: list[tuple[str, dict]] = [(url, {})]
-                if url is raw_url and settings.CLOUDINARY_API_KEY and settings.CLOUDINARY_API_SECRET:
-                    candidate_urls.append((_build_authed_url(url), {}))
+            have_credentials = bool(
+                settings.CLOUDINARY_API_KEY and settings.CLOUDINARY_API_SECRET
+            )
+            urls_to_try: list[tuple[str, str]] = [(image_url, "image-upload")]
+            if have_credentials:
+                signed_image = _signed_url_for(public_id)
+                if signed_image and signed_image != image_url:
+                    urls_to_try.append((signed_image, "image-signed"))
+            urls_to_try.append((raw_url, "raw-upload"))
+            if have_credentials:
+                signed_raw = _signed_url_for(public_id)
+                if signed_raw:
+                    signed_raw_url = signed_raw.replace(
+                        "/image/upload/", "/raw/upload/", 1
+                    )
+                    if signed_raw_url != raw_url:
+                        urls_to_try.append((signed_raw_url, "raw-signed"))
 
-                for fetch_url, _extra_headers in candidate_urls:
-                    async with client.stream("GET", fetch_url) as upstream:
-                        last_status = upstream.status_code
-                        if upstream.status_code == 200:
-                            content_length = upstream.headers.get("Content-Length")
-                            if content_length:
-                                response_headers["Content-Length"] = content_length
-                            async for chunk in upstream.aiter_bytes(chunk_size=64 * 1024):
-                                yield chunk
-                            return
-                        # Drain & close the failed attempt before trying
-                        # the next URL — httpx requires the response to
-                        # be fully consumed (or the stream closed) inside
-                        # the ``with``.
-                        await upstream.aclose()
+            for fetch_url, _label in urls_to_try:
+                async with client.stream("GET", fetch_url) as upstream:
+                    last_status = upstream.status_code
+                    if upstream.status_code == 200:
+                        content_length = upstream.headers.get("Content-Length")
+                        if content_length:
+                            response_headers["Content-Length"] = content_length
+                        async for chunk in upstream.aiter_bytes(chunk_size=64 * 1024):
+                            yield chunk
+                        return
+                    # Drain & close the failed attempt before trying the
+                    # next URL — httpx requires the response to be fully
+                    # consumed (or the stream closed) inside the ``with``.
+                    await upstream.aclose()
             # Neither variant (anonymous *or* authenticated) had the file.
             # Surface a clear, actionable error so the browser doesn't
             # just spin forever.
@@ -338,9 +345,9 @@ async def proxy_raw_file(public_id: str = Query(..., min_length=1)):
                     detail=(
                         "Cloudinary rejected the PDF (HTTP "
                         f"{last_status}). The Cloudinary account has "
-                        "strict access control enabled and the configured "
-                        "api_key/api_secret could not authenticate the "
-                        "raw fallback either. Open "
+                        "strict access control enabled and even the "
+                        "server-side signed URL could not authenticate "
+                        "the fallback. Open "
                         "https://console.cloudinary.com/console/dbbgpd3h3/"
                         "settings/access-control and either disable the "
                         "rule, or whitelist the 'portfolio/pdfs' folder "

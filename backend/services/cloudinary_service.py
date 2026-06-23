@@ -224,3 +224,48 @@ def build_image_url(public_id: str, *, ext: str = "pdf") -> Optional[str]:
     # right Content-Type.
     pid = public_id.split(".", 1)[0]
     return f"https://res.cloudinary.com/{cloud_name}/image/upload/{pid}.{ext}"
+
+
+def build_signed_image_url(public_id: str, *, ext: str = "pdf") -> Optional[str]:
+    """Build a Cloudinary ``image/upload`` delivery URL with a signature.
+
+    Used as the **fallback** when the public, unsigned URL is blocked by
+    account-level access control. The SDK computes an HMAC over the
+    public_id + transformation params using ``CLOUDINARY_API_SECRET`` and
+    adds a ``signature=`` query param + ``timestamp=``; Cloudinary then
+    accepts the fetch from this trusted server-side caller.
+
+    Notes
+    -----
+    - We do **not** use ``type="authenticated"`` here. That delivery
+      variant returns a different URL shape
+      (``/image/authenticated/...``) which is gated behind its own
+      access-control rule, and the live account doesn't enable it for
+      ``portfolio/pdfs``. Signing the standard ``/image/upload/`` URL
+      with a short-lived signature works for the same access rule that
+      blocks the unsigned URL.
+    - We keep ``format=ext`` so Cloudinary serves the bytes as
+      ``application/pdf`` regardless of how the asset was uploaded.
+    """
+    if not public_id:
+        return None
+    if not (settings.CLOUDINARY_API_KEY and settings.CLOUDINARY_API_SECRET):
+        logger.warning(
+            "CLOUDINARY_API_KEY/SECRET are not set; cannot sign delivery URL"
+        )
+        return None
+    configure_cloudinary()
+    pid = public_id.split(".", 1)[0]
+    try:
+        url, _options = cloudinary.utils.cloudinary_url(
+            pid,
+            resource_type="image",
+            type="upload",
+            format=ext,
+            sign_url=True,
+            secure=True,
+        )
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.warning("cloudinary_url(sign_url=True) failed for %s: %s", pid, exc)
+        return None
+    return url
