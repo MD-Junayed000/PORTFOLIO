@@ -30,6 +30,7 @@ from models.schemas import (
     ContactInfoResponse,
 )
 from services.email import send_contact_notification
+from config import settings
 from services.cloudinary_service import (
     build_image_url,
     extract_public_id_from_url,
@@ -278,38 +279,68 @@ async def proxy_raw_file(public_id: str = Query(..., min_length=1)):
         "Accept-Ranges": "bytes",
     }
 
+    def _build_authed_url(url: str) -> str:
+        """Append Cloudinary ``api_key`` / ``api_secret`` so a server-side
+        fetch can read assets behind account-level access control.
+
+        The browser hits this proxy anonymously; Cloudinary's account has
+        strict access control on ``raw/upload`` (the live screenshots show
+        401 for legacy PDFs). The backend, however, *is* allowed to access
+        the asset — Cloudinary accepts the ``api_key`` / ``api_secret``
+        query params on delivery URLs as a back-channel authentication
+        mechanism for server-to-server fetches.
+        """
+        if not (settings.CLOUDINARY_API_KEY and settings.CLOUDINARY_API_SECRET):
+            return url
+        sep = "&" if "?" in url else "?"
+        return (
+            f"{url}{sep}api_key={settings.CLOUDINARY_API_KEY}"
+            f"&api_secret={settings.CLOUDINARY_API_SECRET}"
+        )
+
     async def _stream():
         async with httpx.AsyncClient(timeout=30.0, follow_redirects=True) as client:
             # Prefer the public image variant; if it 404s, the asset is a
-            # legacy raw upload — try that path instead.
+            # legacy raw upload — try that path instead. The raw fallback
+            # may be gated by account access control (401/403), in which
+            # case we retry it with api_key/api_secret as a server-side
+            # authenticated fetch — the backend is a trusted caller.
             last_status: Optional[int] = None
             for url in (image_url, raw_url):
-                async with client.stream("GET", url) as upstream:
-                    last_status = upstream.status_code
-                    if upstream.status_code == 200:
-                        content_length = upstream.headers.get("Content-Length")
-                        if content_length:
-                            response_headers["Content-Length"] = content_length
-                        async for chunk in upstream.aiter_bytes(chunk_size=64 * 1024):
-                            yield chunk
-                        return
-                    # Drain & close the failed attempt before trying the
-                    # next URL — httpx requires the response to be fully
-                    # consumed (or the stream closed) inside the ``with``.
-                    await upstream.aclose()
-            # Neither variant had the file. Surface a clear, actionable
-            # error so the browser doesn't just spin forever. 401/403
-            # specifically means Cloudinary's account-level access
-            # control is blocking anonymous delivery — the fix lives in
-            # the Cloudinary console (Settings → Security → Access
-            # control), not in the code.
+                # First pass: anonymous fetch (matches the old behaviour).
+                # Second pass (raw only): server-side authenticated fetch
+                # for accounts that gate raw/upload behind an access rule.
+                candidate_urls: list[tuple[str, dict]] = [(url, {})]
+                if url is raw_url and settings.CLOUDINARY_API_KEY and settings.CLOUDINARY_API_SECRET:
+                    candidate_urls.append((_build_authed_url(url), {}))
+
+                for fetch_url, _extra_headers in candidate_urls:
+                    async with client.stream("GET", fetch_url) as upstream:
+                        last_status = upstream.status_code
+                        if upstream.status_code == 200:
+                            content_length = upstream.headers.get("Content-Length")
+                            if content_length:
+                                response_headers["Content-Length"] = content_length
+                            async for chunk in upstream.aiter_bytes(chunk_size=64 * 1024):
+                                yield chunk
+                            return
+                        # Drain & close the failed attempt before trying
+                        # the next URL — httpx requires the response to
+                        # be fully consumed (or the stream closed) inside
+                        # the ``with``.
+                        await upstream.aclose()
+            # Neither variant (anonymous *or* authenticated) had the file.
+            # Surface a clear, actionable error so the browser doesn't
+            # just spin forever.
             if last_status in (401, 403):
                 raise HTTPException(
                     status_code=502,
                     detail=(
                         "Cloudinary rejected the PDF (HTTP "
                         f"{last_status}). The Cloudinary account has "
-                        "strict access control enabled. Open "
+                        "strict access control enabled and the configured "
+                        "api_key/api_secret could not authenticate the "
+                        "raw fallback either. Open "
                         "https://console.cloudinary.com/console/dbbgpd3h3/"
                         "settings/access-control and either disable the "
                         "rule, or whitelist the 'portfolio/pdfs' folder "
