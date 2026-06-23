@@ -930,9 +930,17 @@ def process_pdf(
     parsed_chunks = chunk_pdf_by_headings(full_text)
     final_document_id = document_id or _make_document_id(file_path)
     source_name = os.path.basename(file_path)
+    logger.info(
+        "process_pdf[%s]: extracted %d chars, %d parsed chunks, document_id=%r",
+        source_name,
+        len(full_text),
+        len(parsed_chunks),
+        final_document_id,
+    )
 
     # Drop any previous chunks for this document before re-inserting.
     _run(_delete_document_rows(final_document_id))
+    logger.info("process_pdf[%s]: cleared previous chunks", source_name)
 
     texts: List[str] = []
     metadatas: List[Dict[str, Any]] = []
@@ -965,6 +973,11 @@ def process_pdf(
         metadatas.append(metadata)
         doc_ids.append(f"{final_document_id}_chunk_{index}")
 
+    logger.info(
+        "process_pdf[%s]: inserting %d chunks via add_documents_batch",
+        source_name,
+        len(texts),
+    )
     added_ids = add_documents_batch(texts, metadatas, doc_ids)
     gc.collect()
     logger.info(
