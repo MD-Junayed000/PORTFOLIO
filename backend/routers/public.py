@@ -5,6 +5,7 @@ from sqlalchemy import select
 from typing import List, Optional
 
 import httpx
+import re
 
 from database import (
     get_db,
@@ -30,20 +31,19 @@ from models.schemas import (
 )
 from services.email import send_contact_notification
 from services.cloudinary_service import (
+    build_image_url,
     extract_public_id_from_url,
-    sign_raw_download_url,
 )
 
 router = APIRouter(prefix="/api", tags=["public"])
 
 
 def _proxy_url(public_id: str) -> str:
-    """Build an internal proxy URL the browser can hit without auth.
+    """Build an internal proxy URL the browser can hit.
 
     The public_id passed here is the *exact* value stored on the DB row
-    (e.g. ``portfolio/pdf/<token>.pdf``) — Cloudinary's
-    ``private_download_url`` understands that format directly without us
-    having to re-parse the secure_url.
+    (e.g. ``portfolio/pdfs/pdf/<token>``) — the backend proxy appends
+    ``.pdf`` and serves the asset through ``/image/upload/...``.
     """
     from urllib.parse import quote
 
@@ -54,18 +54,47 @@ def _rewrite_to_proxy(url: Optional[str], public_id: Optional[str]) -> Optional[
     """Swap a stored Cloudinary URL for our internal proxy URL.
 
     We prefer the DB-stored ``public_id`` over regex-extracting one from
-    the URL — it is the *exact* value Cloudinary expects to sign and
+    the URL — it is the *exact* value Cloudinary expects to fetch and
     avoids the path-segment ambiguity between ``folder`` and
     ``public_id``. For legacy rows whose ``public_id`` column is NULL,
     we fall back to parsing the secure_url.
+
+    PDFs are now stored under ``resource_type="image"`` with
+    ``format="pdf"``, so we ask the parser to extract from an ``image``
+    URL. Legacy ``raw`` URLs are normalised to the new ``pdf/<token>``
+    shape so the proxy can still serve them.
     """
     if public_id:
-        return _proxy_url(public_id)
+        return _proxy_url(_normalise_public_id(public_id))
     if url:
-        fallback_id = extract_public_id_from_url(url, resource_type="raw")
+        fallback_id = extract_public_id_from_url(url, resource_type="image")
         if fallback_id:
-            return _proxy_url(fallback_id)
+            return _proxy_url(_normalise_public_id(fallback_id))
+        # Last-ditch: the URL may still be a legacy ``raw`` upload.
+        fallback_raw = extract_public_id_from_url(url, resource_type="raw")
+        if fallback_raw:
+            return _proxy_url(_normalise_public_id(fallback_raw))
     return url
+
+
+def _normalise_public_id(public_id: str) -> str:
+    """Coerce any stored public_id into the canonical ``pdf/<token>`` shape.
+
+    Real-time uploads (after the image-format migration) produce
+    ``portfolio/pdfs/pdf/<token>``. Legacy rows uploaded with the old
+    ``raw`` flow have malformed ``portfolio/pdfs/portfolio/pdf/<token>``
+    IDs because ``folder=portfolio/pdfs`` and ``public_id=portfolio/pdf/<token>``
+    were both passed in. We strip the duplicated ``portfolio/pdf`` segment
+    so the proxy resolves to a real Cloudinary asset.
+    """
+    if not public_id:
+        return public_id
+    # Collapse "portfolio/pdfs/portfolio/pdf/<token>" -> "portfolio/pdfs/pdf/<token>"
+    return re.sub(
+        r"^portfolio/pdfs/portfolio/pdf/",
+        "portfolio/pdfs/pdf/",
+        public_id,
+    )
 
 
 @router.get("/about", response_model=AboutContentResponse)
@@ -208,76 +237,96 @@ async def get_contact_info(db: AsyncSession = Depends(get_db)):
 
 @router.get("/files/raw")
 async def proxy_raw_file(public_id: str = Query(..., min_length=1)):
-    """Stream a Cloudinary ``raw`` asset through this backend.
+    """Stream a Cloudinary asset through this backend.
 
-    The original Cloudinary URL is not directly accessible to anonymous
-    browsers (it returns HTTP 401) because the account's default delivery
-    type is ``authenticated``. We solve that by signing a short-lived
-    download URL with ``cloudinary.utils.private_download_url`` and
-    streaming the bytes back to the client.
+    PDFs uploaded after the image-format migration live under
+    ``resource_type="image"`` with ``format="pdf"``, so their delivery
+    URL is **public** — Cloudinary serves ``image/upload`` assets without
+    an authenticated session. We proxy them through this backend (rather
+    than pointing the browser at Cloudinary directly) so we can:
 
-    The response is marked ``inline`` with the correct ``Content-Type``
-    so the browser's built-in PDF viewer can render the certificate /
-    resume without a download dialog.
+    1. Keep the Cloudinary ``cloud_name`` out of the public response.
+    2. Set ``Content-Disposition`` / ``Content-Length`` consistently.
+    3. Strip any upstream ``Content-Encoding`` (Cloudinary occasionally
+       tags raw responses as gzip after httpx has already decoded them).
+    4. Fall back to the legacy ``raw`` URL if the image variant returns
+       404 — this lets already-uploaded CV / certificate PDFs keep
+       working as long as the account's default delivery type is public.
 
-    We also strip the upstream ``Content-Encoding`` header (Cloudinary
-    raw resources are sometimes served with ``Content-Encoding: gzip``
-    while httpx has already decoded the body) and pass through the
-    upstream ``Content-Length`` so Chrome's PDF viewer knows the file
-    size up-front and can render the progress bar.
+    No signing is involved: we just build the URL from
+    ``settings.CLOUDINARY_CLOUD_NAME`` + the public_id + ``.pdf``.
     """
-    signed_url = sign_raw_download_url(public_id, ttl_seconds=300)
-    if not signed_url:
+    public_id = _normalise_public_id(public_id)
+    image_url = build_image_url(public_id, ext="pdf")
+    if not image_url:
         raise HTTPException(
             status_code=502,
-            detail="Failed to sign Cloudinary download URL",
+            detail="Failed to build Cloudinary image URL",
         )
 
-    # Sniff the content type from the public_id's extension so we can set
-    # the right Content-Type header. PDFs default to application/pdf.
-    extension = public_id.rsplit(".", 1)[-1].lower() if "." in public_id else "pdf"
-    media_type_map = {
-        "pdf": "application/pdf",
-        "jpg": "image/jpeg",
-        "jpeg": "image/jpeg",
-        "png": "image/png",
-        "webp": "image/webp",
-    }
-    media_type = media_type_map.get(extension, "application/octet-stream")
-    is_pdf = media_type == "application/pdf"
+    # Build a parallel ``raw`` URL for the legacy-upload fallback. If the
+    # asset was uploaded before the image-format migration it lives under
+    # ``resource_type="raw"`` and we want to still serve it (so the user
+    # doesn't see broken links while they're re-uploading their files).
+    raw_url = image_url.replace("/image/upload/", "/raw/upload/", 1)
 
     filename = public_id.rsplit("/", 1)[-1] or "file"
 
-    # Forward Content-Length (so the PDF viewer shows a progress bar) but
-    # drop any upstream Content-Encoding — Cloudinary occasionally serves
-    # raw assets with ``Content-Encoding: gzip`` while httpx has already
-    # transparently decoded the body, which would leave the browser trying
-    # to gunzip already-decoded bytes and trip "Failed to load PDF document".
     response_headers: dict[str, str] = {
-        "Content-Disposition": (
-            f'inline; filename="{filename}"' if is_pdf
-            else f'attachment; filename="{filename}"'
-        ),
+        "Content-Disposition": f'inline; filename="{filename}"',
         "Cache-Control": "private, max-age=60",
         "Accept-Ranges": "bytes",
     }
 
     async def _stream():
         async with httpx.AsyncClient(timeout=30.0, follow_redirects=True) as client:
-            async with client.stream("GET", signed_url) as upstream:
-                upstream.raise_for_status()
-                # Stash the upstream size the first time we see headers so
-                # we can emit a single Content-Length (the comment on the
-                # proxy docstring claims we do this, but the original
-                # implementation never wired it up).
-                content_length = upstream.headers.get("Content-Length")
-                if content_length and "Content-Length" not in response_headers:
-                    response_headers["Content-Length"] = content_length
-                async for chunk in upstream.aiter_bytes(chunk_size=64 * 1024):
-                    yield chunk
+            # Prefer the public image variant; if it 404s, the asset is a
+            # legacy raw upload — try that path instead.
+            last_status: Optional[int] = None
+            for url in (image_url, raw_url):
+                async with client.stream("GET", url) as upstream:
+                    last_status = upstream.status_code
+                    if upstream.status_code == 200:
+                        content_length = upstream.headers.get("Content-Length")
+                        if content_length:
+                            response_headers["Content-Length"] = content_length
+                        async for chunk in upstream.aiter_bytes(chunk_size=64 * 1024):
+                            yield chunk
+                        return
+                    # Drain & close the failed attempt before trying the
+                    # next URL — httpx requires the response to be fully
+                    # consumed (or the stream closed) inside the ``with``.
+                    await upstream.aclose()
+            # Neither variant had the file. Surface a clear, actionable
+            # error so the browser doesn't just spin forever. 401/403
+            # specifically means Cloudinary's account-level access
+            # control is blocking anonymous delivery — the fix lives in
+            # the Cloudinary console (Settings → Security → Access
+            # control), not in the code.
+            if last_status in (401, 403):
+                raise HTTPException(
+                    status_code=502,
+                    detail=(
+                        "Cloudinary rejected the PDF (HTTP "
+                        f"{last_status}). The Cloudinary account has "
+                        "strict access control enabled. Open "
+                        "https://console.cloudinary.com/console/dbbgpd3h3/"
+                        "settings/access-control and either disable the "
+                        "rule, or whitelist the 'portfolio/pdfs' folder "
+                        "for public delivery, then re-upload the PDF "
+                        "from the admin panel."
+                    ),
+                )
+            raise HTTPException(
+                status_code=404,
+                detail=(
+                    "PDF not found on Cloudinary. Re-upload it from the "
+                    "admin panel so it lands under the public image delivery."
+                ),
+            )
 
     return StreamingResponse(
         _stream(),
-        media_type=media_type,
+        media_type="application/pdf",
         headers=response_headers,
     )

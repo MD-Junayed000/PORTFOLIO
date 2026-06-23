@@ -85,28 +85,62 @@ async def lifespan(app: FastAPI):
     # proxy already lives behind Cloudinary auth, so a single misparse
     # breaks every CV / certificate link on the site. Safe to re-run on
     # every boot: rows that already have a public_id are skipped.
+    #
+    # We also collapse the legacy ``portfolio/pdfs/portfolio/pdf/<token>``
+    # public_ids (caused by the doubled folder + public_id prefix under
+    # the old ``raw`` flow) into the canonical ``portfolio/pdfs/pdf/<token>``
+    # shape so the new image-delivery proxy can resolve them.
     try:
         from database import async_session, AboutContent, Certificate
         from sqlalchemy import select
         from services.cloudinary_service import extract_public_id_from_url
+        import re as _re
 
         async with async_session() as session:
             fixed = 0
             cert_result = await session.execute(select(Certificate))
             for cert in cert_result.scalars().all():
-                if cert.file_public_id or not cert.file_path:
+                if not cert.file_path:
                     continue
-                parsed = extract_public_id_from_url(cert.file_path, resource_type="raw")
-                if parsed:
-                    cert.file_public_id = parsed
-                    fixed += 1
+                if not cert.file_public_id:
+                    parsed = extract_public_id_from_url(
+                        cert.file_path, resource_type="image"
+                    ) or extract_public_id_from_url(
+                        cert.file_path, resource_type="raw"
+                    )
+                    if parsed:
+                        cert.file_public_id = parsed
+                        fixed += 1
+                if cert.file_public_id:
+                    collapsed = _re.sub(
+                        r"^portfolio/pdfs/portfolio/pdf/",
+                        "portfolio/pdfs/pdf/",
+                        cert.file_public_id,
+                    )
+                    if collapsed != cert.file_public_id:
+                        cert.file_public_id = collapsed
+                        fixed += 1
             about_result = await session.execute(select(AboutContent))
             about = about_result.scalar_one_or_none()
-            if about and not about.cv_public_id and about.cv_file_path:
-                parsed = extract_public_id_from_url(about.cv_file_path, resource_type="raw")
-                if parsed:
-                    about.cv_public_id = parsed
-                    fixed += 1
+            if about and about.cv_file_path:
+                if not about.cv_public_id:
+                    parsed = extract_public_id_from_url(
+                        about.cv_file_path, resource_type="image"
+                    ) or extract_public_id_from_url(
+                        about.cv_file_path, resource_type="raw"
+                    )
+                    if parsed:
+                        about.cv_public_id = parsed
+                        fixed += 1
+                if about.cv_public_id:
+                    collapsed = _re.sub(
+                        r"^portfolio/pdfs/portfolio/pdf/",
+                        "portfolio/pdfs/pdf/",
+                        about.cv_public_id,
+                    )
+                    if collapsed != about.cv_public_id:
+                        about.cv_public_id = collapsed
+                        fixed += 1
             if fixed:
                 await session.commit()
             logger.info("Lifespan: backfilled %d Cloudinary public_ids.", fixed)

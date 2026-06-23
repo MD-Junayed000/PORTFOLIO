@@ -324,7 +324,11 @@ async def backfill_public_ids(
             continue
         if not cert.file_path:
             continue
-        parsed = extract_public_id_from_url(cert.file_path, resource_type="raw")
+        parsed = extract_public_id_from_url(cert.file_path, resource_type="image")
+        if not parsed:
+            # Fall back to legacy ``raw`` URLs uploaded before the
+            # image-format migration.
+            parsed = extract_public_id_from_url(cert.file_path, resource_type="raw")
         if not parsed:
             # Non-Cloudinary URL (legacy local upload). Skip — the proxy
             # rewrite will just return the original path unchanged.
@@ -335,7 +339,9 @@ async def backfill_public_ids(
     about_result = await db.execute(select(AboutContent))
     about = about_result.scalar_one_or_none()
     if about and not about.cv_public_id and about.cv_file_path:
-        parsed = extract_public_id_from_url(about.cv_file_path, resource_type="raw")
+        parsed = extract_public_id_from_url(about.cv_file_path, resource_type="image")
+        if not parsed:
+            parsed = extract_public_id_from_url(about.cv_file_path, resource_type="raw")
         if parsed:
             about.cv_public_id = parsed
             fixed.append("about:cv")
@@ -377,8 +383,10 @@ async def delete_certificate(
     # Best-effort delete of the Cloudinary asset. The DB row is the source
     # of truth, so a Cloudinary failure must not block the DB delete.
     if certificate.file_public_id:
-        resource_type = "raw" if (certificate.file_path or "").lower().endswith(".pdf") else "image"
-        delete_asset(certificate.file_public_id, resource_type=resource_type)
+        # All PDFs in this app are stored under ``resource_type="image"``
+        # with ``format="pdf"`` (see ``services/cloudinary_service.py``).
+        # Images use the regular ``image`` delivery type.
+        delete_asset(certificate.file_public_id, resource_type="image")
 
     await db.delete(certificate)
     await db.commit()
@@ -543,7 +551,7 @@ async def upload_cv(
         about = AboutContent(bio="", title="Portfolio")
         db.add(about)
     if about.cv_public_id and about.cv_public_id != public_id:
-        delete_asset(about.cv_public_id, resource_type="raw")
+        delete_asset(about.cv_public_id, resource_type="image")
     about.cv_file_path = secure_url
     about.cv_public_id = public_id
     await db.commit()
@@ -564,7 +572,7 @@ async def delete_cv(
 
     # Delete from Cloudinary (best effort)
     if about.cv_public_id:
-        delete_asset(about.cv_public_id, resource_type="raw")
+        delete_asset(about.cv_public_id, resource_type="image")
 
     about.cv_file_path = None
     about.cv_public_id = None
