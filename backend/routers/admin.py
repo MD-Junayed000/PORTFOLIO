@@ -507,6 +507,24 @@ async def upload_pdf(
         tmp_path = tmp.name
     try:
         doc_ids = process_pdf(tmp_path, document_id=document_id)
+    except Exception:
+        # Render logs are the only visibility we have here. Emit a full
+        # traceback so the next deploy run shows the real cause of the
+        # 500 the browser sees (HF embedding timeout, pgvector reject, etc.).
+        logger.exception(
+            "PDF processing failed for filename=%r document_id=%r size=%d",
+            file.filename,
+            document_id,
+            len(content),
+        )
+        try:
+            os.remove(tmp_path)
+        except OSError:
+            pass
+        raise HTTPException(
+            status_code=500,
+            detail="Failed to process PDF for the knowledge base. See server logs.",
+        )
     finally:
         try:
             os.remove(tmp_path)
@@ -514,20 +532,33 @@ async def upload_pdf(
             pass
 
     # Save document metadata to DB
-    document = Document(
-        filename=secure_url,
-        topic=topic_name,
-        original_name=file.filename,
-        # `uploaded_at` maps to Postgres TIMESTAMP WITHOUT TIME ZONE; strip
-        # tzinfo so asyncpg can bind it (see database.py ContactMessage note).
-        uploaded_at=datetime.now(timezone.utc).replace(tzinfo=None),
-        chunk_count=len(doc_ids),
-    )
-    # Persist Cloudinary public_id alongside the URL via a transient attribute
-    setattr(document, "cloudinary_public_id", public_id)
-    db.add(document)
-    await db.commit()
-    await db.refresh(document)
+    try:
+        document = Document(
+            filename=secure_url,
+            topic=topic_name,
+            original_name=file.filename,
+            # `uploaded_at` maps to Postgres TIMESTAMP WITHOUT TIME ZONE; strip
+            # tzinfo so asyncpg can bind it (see database.py ContactMessage note).
+            uploaded_at=datetime.now(timezone.utc).replace(tzinfo=None),
+            chunk_count=len(doc_ids),
+        )
+        # Persist Cloudinary public_id alongside the URL via a transient attribute
+        setattr(document, "cloudinary_public_id", public_id)
+        db.add(document)
+        await db.commit()
+        await db.refresh(document)
+    except Exception:
+        # Same reasoning as the process_pdf branch: surface the real error in
+        # the Render log so the cause of any future 500 is obvious.
+        logger.exception(
+            "Document metadata insert failed for filename=%r document_id=%r",
+            file.filename,
+            document_id,
+        )
+        raise HTTPException(
+            status_code=500,
+            detail="Failed to save document metadata. See server logs.",
+        )
 
     return {
         "filename": secure_url,
