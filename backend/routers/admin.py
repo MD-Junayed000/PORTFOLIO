@@ -518,7 +518,9 @@ async def upload_pdf(
         filename=secure_url,
         topic=topic_name,
         original_name=file.filename,
-        uploaded_at=datetime.now(timezone.utc),
+        # `uploaded_at` maps to Postgres TIMESTAMP WITHOUT TIME ZONE; strip
+        # tzinfo so asyncpg can bind it (see database.py ContactMessage note).
+        uploaded_at=datetime.now(timezone.utc).replace(tzinfo=None),
         chunk_count=len(doc_ids),
     )
     # Persist Cloudinary public_id alongside the URL via a transient attribute
@@ -701,7 +703,8 @@ async def rag_reindex_all(
                         pass
 
                 document.chunk_count = len(doc_ids)
-                document.uploaded_at = datetime.now(timezone.utc)
+                # Same tz-naive UTC rule as the initial insert above.
+                document.uploaded_at = datetime.now(timezone.utc).replace(tzinfo=None)
                 reindexed.append(
                     {
                         "document_id": document.id,

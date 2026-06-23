@@ -182,7 +182,15 @@ class ContactMessage(Base):
     name = Column(String(255), nullable=False)
     email = Column(String(255), nullable=False)
     message = Column(Text, nullable=False)
-    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    # Column type is TIMESTAMP WITHOUT TIME ZONE (Postgres `timestamp`).
+    # asyncpg refuses to bind a tz-aware datetime to such a column with:
+    #     "can't subtract offset-naive and offset-aware datetimes"
+    # so we always store a *naive* UTC value. `.replace(tzinfo=None)` is the
+    # canonical way to drop tzinfo without changing the wall-clock instant.
+    created_at = Column(
+        DateTime,
+        default=lambda: datetime.now(timezone.utc).replace(tzinfo=None),
+    )
 
 
 class ContactInfo(Base):
@@ -202,7 +210,12 @@ class Document(Base):
     filename = Column(String(500), nullable=False)
     topic = Column(String(255), nullable=True)
     original_name = Column(String(500), nullable=True)
-    uploaded_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    # See ContactMessage.created_at: same tz-naive UTC default to keep asyncpg
+    # happy against the schema's TIMESTAMP WITHOUT TIME ZONE column.
+    uploaded_at = Column(
+        DateTime,
+        default=lambda: datetime.now(timezone.utc).replace(tzinfo=None),
+    )
     chunk_count = Column(Integer, default=0)
     cloudinary_public_id = Column(String(500), nullable=True)
 
