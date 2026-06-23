@@ -4,7 +4,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from config import settings, validate_settings_at_startup
-from database import _is_postgres
+from database import _is_postgres, _db_url
 from services.vector_store import initialize_collection
 from services.seed_data import seed_database
 from services.cloudinary_service import configure_cloudinary
@@ -26,37 +26,58 @@ def _run_alembic_upgrade() -> None:
     the schema is in sync with the code on every deploy, regardless of how
     the Render service is configured (manual dashboard service or
     render.yaml-managed).
+
+    Any failure is re-raised with the full traceback logged first, so the
+    deploy log shows the root cause instead of a silent
+    ``Exited with status 3``.
     """
     if not _is_postgres:
         # Local sqlite fallback (dev / tests) skips alembic; the test suite
         # already creates its own schema via Base.metadata.create_all.
         logger.info("Skipping alembic upgrade: non-postgres DATABASE_URL.")
         return
+
+    logger.info("Running alembic upgrade head against %s ...", _db_url.split("@")[-1])
     from alembic import command
     from alembic.config import Config as AlembicConfig
 
     cfg = AlembicConfig("alembic.ini")
     cfg.set_main_option("script_location", "migrations")
-    command.upgrade(cfg, "head")
+
+    try:
+        command.upgrade(cfg, "head")
+    except Exception:
+        # Log the full traceback ourselves so the cause is visible in the
+        # Render deploy log even if uvicorn's handler is not yet wired up
+        # (it is the lifespan exception that triggers the silent exit-3).
+        logger.exception("Alembic upgrade head FAILED")
+        raise
     logger.info("Alembic migrations applied (head).")
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # Startup
+    logger.info("Lifespan: configuring Cloudinary ...")
     configure_cloudinary()
     # Apply database migrations before anything else touches the schema.
     # Idempotent: alembic upgrade head is a no-op when the DB is already
-    # at the latest revision.
+    # at the latest revision. Any failure is re-raised (and logged via
+    # ``logger.exception``) so the deploy log shows the cause instead of
+    # the silent ``Exited with status 3`` we were seeing before.
     _run_alembic_upgrade()
+    logger.info("Lifespan: initializing vector collection ...")
     initialize_collection()
     # NOTE: RAG (pgvector) is intentionally MANUAL ONLY.
     # The `document_chunks` table starts empty on every fresh database. An admin
     # MUST upload PDFs through the admin panel (POST /api/admin/upload-pdf) for
     # the chatbot to have any knowledge to retrieve. Nothing is auto-seeded.
+    logger.info("Lifespan: seeding database ...")
     await seed_database()
+    logger.info("Lifespan: startup complete.")
     yield
     # Shutdown
+    logger.info("Lifespan: shutdown.")
 
 
 app = FastAPI(

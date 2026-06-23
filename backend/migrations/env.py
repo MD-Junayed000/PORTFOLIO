@@ -20,18 +20,19 @@ from sqlalchemy.ext.asyncio import async_engine_from_config
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from config import settings  # noqa: E402  (after sys.path tweak)
-from database import Base  # noqa: E402  (metadata target)
+from database import Base, build_clean_database_url  # noqa: E402  (metadata target + URL cleaner)
 
 # Alembic Config object.
 config = context.config
 
-# Inject the runtime URL.
-# - Strip `channel_binding` because asyncpg does not understand it.
-url = settings.DATABASE_URL.split("?")[0]
-qs = settings.DATABASE_URL.split("?")[1] if "?" in settings.DATABASE_URL else ""
-params = [p for p in qs.split("&") if p] if qs else []
-filtered = [p for p in params if not p.startswith("channel_binding=")]
-url = url + ("?" + "&".join(filtered) if filtered else "")
+# Inject the runtime URL through the same cleaner the app uses, so that
+# asyncpg-incompatible libpq query keys (sslmode, channel_binding, ssl) are
+# stripped before alembic builds its own engine. Without this, the very first
+# migration on a fresh Neon DB crashes with
+# ``TypeError: connect() got an unexpected keyword argument 'sslmode'``,
+# which is surfaced on Render as a silent ``Exited with status 3`` because
+# uvicorn's lifespan exception happens before any log line is flushed.
+url = build_clean_database_url(settings.DATABASE_URL)
 config.set_main_option("sqlalchemy.url", url)
 
 # Configure stdlib logging from alembic.ini.

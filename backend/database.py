@@ -69,6 +69,18 @@ def _normalize_database_url(url: str) -> Tuple[str, dict]:
     return parsed.render_as_string(hide_password=False), engine_kwargs
 
 
+def build_clean_database_url(url: str) -> str:
+    """Return only the URL string (without engine kwargs), safe to feed to alembic.
+
+    Alembic reads ``sqlalchemy.url`` from alembic.ini at the time it constructs
+    its own engine. If we hand it the raw Neon connection string, asyncpg will
+    fail with ``TypeError: connect() got an unexpected keyword argument
+    'sslmode'`` exactly as it did in the app engine. We strip the same
+    libpq-style query keys here so alembic uses the same clean URL the app uses.
+    """
+    return _normalize_database_url(url)[0]
+
+
 _db_url, _engine_kwargs = _normalize_database_url(settings.DATABASE_URL)
 
 engine = create_async_engine(_db_url, **_engine_kwargs)
