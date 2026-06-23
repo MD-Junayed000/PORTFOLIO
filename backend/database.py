@@ -75,6 +75,13 @@ engine = create_async_engine(_db_url, **_engine_kwargs)
 async_session = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
 
 
+# Exposed for main.py to decide whether to run ``alembic upgrade head`` on
+# startup. The local sqlite fallback (used by tests and by developers who
+# have not set DATABASE_URL) skips alembic because the test suite already
+# creates its own schema via ``Base.metadata.create_all``.
+_is_postgres = (_db_url.split("+", 1)[0] if _db_url else "").startswith("postgres")
+
+
 class Base(DeclarativeBase):
     pass
 

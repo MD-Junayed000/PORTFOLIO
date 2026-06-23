@@ -4,6 +4,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from config import settings, validate_settings_at_startup
+from database import _is_postgres
 from services.vector_store import initialize_collection
 from services.seed_data import seed_database
 from services.cloudinary_service import configure_cloudinary
@@ -17,11 +18,38 @@ logger = logging.getLogger(__name__)
 validate_settings_at_startup()
 
 
+def _run_alembic_upgrade() -> None:
+    """Run ``alembic upgrade head`` programmatically against the live engine.
+
+    Render-managed Postgres (Neon) is external to Render, so tables are NOT
+    created automatically. The ``preDeployCommand`` in render.yaml is not
+    always honored (e.g. when the service was created manually in the
+    dashboard). Running migrations in the app lifespan guarantees the
+    schema is in sync with the code on every deploy, regardless of how
+    the Render service is configured.
+    """
+    if not _is_postgres:
+        # Local sqlite fallback (dev / tests) skips alembic; the test suite
+        # already creates its own schema via Base.metadata.create_all.
+        logger.info("Skipping alembic upgrade: non-postgres DATABASE_URL.")
+        return
+    from alembic import command
+    from alembic.config import Config as AlembicConfig
+
+    cfg = AlembicConfig("alembic.ini")
+    cfg.set_main_option("script_location", "migrations")
+    command.upgrade(cfg, "head")
+    logger.info("Alembic migrations applied (head).")
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # Startup
     configure_cloudinary()
-    # Schema is owned by Alembic; run `alembic upgrade head` on deploy.
+    # Apply database migrations before anything else touches the schema.
+    # Idempotent: alembic upgrade head is a no-op when the DB is already
+    # at the latest revision.
+    _run_alembic_upgrade()
     initialize_collection()
     # NOTE: RAG (pgvector) is intentionally MANUAL ONLY.
     # The `document_chunks` table starts empty on every fresh database. An admin
