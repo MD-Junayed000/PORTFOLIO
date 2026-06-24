@@ -79,75 +79,12 @@ async def lifespan(app: FastAPI):
     # and the chat still responds (with a polite fallback message).
     logger.info("Lifespan: seeding database ...")
     await seed_database()
-    # Heal legacy rows that were uploaded before we started tracking the
-    # Cloudinary ``public_id`` in its own column. Without this, the public
-    # proxy has to regex-parse the secure_url on every request — and the
-    # proxy already lives behind Cloudinary auth, so a single misparse
-    # breaks every CV / certificate link on the site. Safe to re-run on
-    # every boot: rows that already have a public_id are skipped.
-    #
-    # We also collapse the legacy ``portfolio/pdfs/portfolio/pdf/<token>``
-    # public_ids (caused by the doubled folder + public_id prefix under
-    # the old ``raw`` flow) into the canonical ``portfolio/pdfs/pdf/<token>``
-    # shape so the new image-delivery proxy can resolve them.
-    try:
-        from database import async_session, AboutContent, Certificate
-        from sqlalchemy import select
-        from services.cloudinary_service import extract_public_id_from_url
-        import re as _re
-
-        async with async_session() as session:
-            fixed = 0
-            cert_result = await session.execute(select(Certificate))
-            for cert in cert_result.scalars().all():
-                if not cert.file_path:
-                    continue
-                if not cert.file_public_id:
-                    parsed = extract_public_id_from_url(
-                        cert.file_path, resource_type="image"
-                    ) or extract_public_id_from_url(
-                        cert.file_path, resource_type="raw"
-                    )
-                    if parsed:
-                        cert.file_public_id = parsed
-                        fixed += 1
-                if cert.file_public_id:
-                    collapsed = _re.sub(
-                        r"^portfolio/pdfs/portfolio/pdf/",
-                        "portfolio/pdfs/pdf/",
-                        cert.file_public_id,
-                    )
-                    if collapsed != cert.file_public_id:
-                        cert.file_public_id = collapsed
-                        fixed += 1
-            about_result = await session.execute(select(AboutContent))
-            about = about_result.scalar_one_or_none()
-            if about and about.cv_file_path:
-                if not about.cv_public_id:
-                    parsed = extract_public_id_from_url(
-                        about.cv_file_path, resource_type="image"
-                    ) or extract_public_id_from_url(
-                        about.cv_file_path, resource_type="raw"
-                    )
-                    if parsed:
-                        about.cv_public_id = parsed
-                        fixed += 1
-                if about.cv_public_id:
-                    collapsed = _re.sub(
-                        r"^portfolio/pdfs/portfolio/pdf/",
-                        "portfolio/pdfs/pdf/",
-                        about.cv_public_id,
-                    )
-                    if collapsed != about.cv_public_id:
-                        about.cv_public_id = collapsed
-                        fixed += 1
-            if fixed:
-                await session.commit()
-            logger.info("Lifespan: backfilled %d Cloudinary public_ids.", fixed)
-    except Exception:
-        # Never let a one-shot cleanup block startup; the proxy fallback
-        # (regex parse of the secure_url) still works without it.
-        logger.exception("Lifespan: public_id backfill failed (non-fatal)")
+    # The Cloudinary public_id backfill is no longer needed: the CV is
+    # now served as a static file from the backend, and certificates are
+    # just external URLs. The legacy ``cv_public_id`` / ``file_public_id``
+    # columns are left in place (nullable) so existing rows don't break,
+    # but nothing reads them anymore.
+    logger.info("Lifespan: public_id backfill skipped (no longer required).")
 
     logger.info("Lifespan: startup complete.")
     yield

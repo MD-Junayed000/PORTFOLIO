@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { Loader2, Plus, Trash2, Upload } from "lucide-react";
+import { Loader2, Plus, Trash2 } from "lucide-react";
 import api from "@/lib/api";
 import toast from "react-hot-toast";
 import { ExtraLink } from "@/types";
@@ -16,7 +16,6 @@ export default function AdminAbout() {
   const [githubUrl, setGithubUrl] = useState("");
   const [scholarUrl, setScholarUrl] = useState("");
   const [extraLinks, setExtraLinks] = useState<ExtraLink[]>([]);
-  const [cvFilePath, setCvFilePath] = useState("");
   const [projectDisplayCount, setProjectDisplayCount] = useState<number | null>(null);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -33,7 +32,6 @@ export default function AdminAbout() {
         setLinkedinUrl(res.data.linkedin_url || "");
         setGithubUrl(res.data.github_url || "");
         setScholarUrl(res.data.scholar_url || "");
-        setCvFilePath(res.data.cv_file_path || "");
         setProjectDisplayCount(res.data.project_display_count ?? 6);
         if (res.data.extra_links) {
           try {
@@ -61,7 +59,6 @@ export default function AdminAbout() {
         github_url: githubUrl || null,
         scholar_url: scholarUrl || null,
         extra_links: extraLinks.length > 0 ? JSON.stringify(extraLinks) : null,
-        cv_file_path: cvFilePath || null,
         project_display_count: projectDisplayCount,
       });
       toast.success("About updated");
@@ -87,33 +84,6 @@ export default function AdminAbout() {
       toast.success("Photo uploaded");
     } catch {
       toast.error("Upload failed");
-    }
-  };
-
-  const handleCvUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
-
-    const formData = new FormData();
-    formData.append("file", file);
-    try {
-      const res = await api.post("/api/admin/upload-cv", formData, {
-        headers: { "Content-Type": "multipart/form-data" },
-      });
-      setCvFilePath(res.data.cv_url);
-      toast.success("CV uploaded");
-    } catch {
-      toast.error("CV upload failed");
-    }
-  };
-
-  const handleDeleteCv = async () => {
-    try {
-      await api.delete("/api/admin/cv");
-      setCvFilePath("");
-      toast.success("CV deleted");
-    } catch {
-      toast.error("Failed to delete CV");
     }
   };
 
@@ -321,40 +291,6 @@ export default function AdminAbout() {
               </div>
             ))}
           </div>
-        </div>
-
-        {/* CV Upload */}
-        <div className="border-t border-border pt-6">
-          <h2 className="text-lg font-semibold text-foreground mb-4">CV / Resume</h2>
-
-          {cvFilePath ? (
-            <div className="flex items-center gap-3 mb-3">
-              <span className="text-sm text-foreground">
-                Current CV: <span className="text-primary">{cvFilePath.split("/").pop()}</span>
-              </span>
-              <button
-                type="button"
-                onClick={handleDeleteCv}
-                className="inline-flex items-center gap-1 px-2 py-1 text-xs text-red-400 border border-red-400/30 rounded hover:bg-red-400/10 transition-colors"
-              >
-                <Trash2 size={12} />
-                Delete
-              </button>
-            </div>
-          ) : (
-            <p className="text-sm text-muted mb-3">No CV uploaded.</p>
-          )}
-
-          <label className="inline-flex items-center gap-2 px-4 py-2 bg-surface border border-border rounded-lg text-sm text-foreground hover:bg-surface-hover cursor-pointer transition-colors">
-            <Upload size={16} />
-            Upload CV (PDF)
-            <input
-              type="file"
-              accept=".pdf"
-              onChange={handleCvUpload}
-              className="hidden"
-            />
-          </label>
         </div>
 
         <button

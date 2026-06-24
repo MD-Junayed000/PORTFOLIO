@@ -41,9 +41,7 @@ from services import rag_pipeline
 from services.cloudinary_service import (
     configure_cloudinary,
     upload_image,
-    upload_pdf,
     delete_asset,
-    extract_public_id_from_url,
 )
 from config import settings
 

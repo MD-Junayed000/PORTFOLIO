@@ -64,14 +64,12 @@ export default function Hero() {
     about?.focus_area ||
     "Specializing in Computer Vision, NLP, and Cloud-Native ML Systems. Building intelligent solutions at the intersection of research and production.";
 
-  // The backend may return a proxy URL (``/api/files/raw?public_id=...``)
-  // for raw resources, a legacy local ``/uploads/...`` path, or an
-  // absolute Cloudinary URL. ``absolutizeUrl`` normalises all three so the
-  // browser can actually open the file.
-  const cvUrl =
-    absolutizeUrl(about?.cv_file_path) ?? "/Muhammad_Junayed_CV.pdf";
-  // Suggest a friendly filename for the download so the browser saves it as
-  // a real .pdf even if the upstream CDN omits Content-Disposition.
+  // The CV is served by the backend at ``/api/cv/Muhammad_Junayed_CV.pdf``.
+  // ``about.cv_file_path`` will already be that path (set by the
+  // backend's GET /api/about), and ``absolutizeUrl`` prepends the API
+  // base URL so the browser can open it directly. If the backend has no
+  // CV file on disk, ``cv_file_path`` is null and the link is hidden.
+  const cvUrl = absolutizeUrl(about?.cv_file_path);
   const cvDownloadName = "Muhammad_Junayed_CV.pdf";
 
   // Profile image: use API photo_url if available, fallback to static image
@@ -133,16 +131,18 @@ export default function Hero() {
             >
               View Projects
             </a>
-            <a
-              href={cvUrl}
-              target="_blank"
-              rel="noopener noreferrer"
-              download={cvDownloadName}
-              className="inline-flex items-center gap-2 px-6 py-3 border border-border hover:border-primary/50 hover:bg-surface text-foreground rounded-lg font-medium transition-colors"
-            >
-              <Download size={18} />
-              Download CV
-            </a>
+            {cvUrl && (
+              <a
+                href={cvUrl}
+                target="_blank"
+                rel="noopener noreferrer"
+                download={cvDownloadName}
+                className="inline-flex items-center gap-2 px-6 py-3 border border-border hover:border-primary/50 hover:bg-surface text-foreground rounded-lg font-medium transition-colors"
+              >
+                <Download size={18} />
+                Download CV
+              </a>
+            )}
           </div>
         </motion.div>
 

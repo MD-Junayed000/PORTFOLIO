@@ -1,7 +1,7 @@
 "use client";
 
-import { useEffect, useState, useRef } from "react";
-import { Plus, Pencil, Trash2, Loader2, X, Upload, FileText } from "lucide-react";
+import { useEffect, useState } from "react";
+import { Plus, Pencil, Trash2, Loader2, X, FileText } from "lucide-react";
 import api from "@/lib/api";
 import toast from "react-hot-toast";
 import type { Certificate } from "@/types";
@@ -10,11 +10,9 @@ interface CertificateForm {
   name: string;
   issuer: string;
   date: string;
+  // External URL the public site links to when the certificate is clicked
+  // (e.g. https://www.credly.com/badges/...). No file is uploaded anymore.
   file_path: string;
-  // Cloudinary public_id of the uploaded file. Captured from
-  // /api/admin/upload-certificate so the backend can re-sign the URL
-  // on the public proxy without having to regex-parse the secure_url.
-  file_public_id: string;
 }
 
 const emptyForm: CertificateForm = {
@@ -22,7 +20,6 @@ const emptyForm: CertificateForm = {
   issuer: "",
   date: "",
   file_path: "",
-  file_public_id: "",
 };
 
 export default function AdminCertificates() {
@@ -32,34 +29,6 @@ export default function AdminCertificates() {
   const [editingId, setEditingId] = useState<number | null>(null);
   const [form, setForm] = useState<CertificateForm>(emptyForm);
   const [saving, setSaving] = useState(false);
-  const [uploading, setUploading] = useState(false);
-  const fileInputRef = useRef<HTMLInputElement>(null);
-
-  const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
-    setUploading(true);
-    try {
-      const formData = new FormData();
-      formData.append("file", file);
-      const res = await api.post("/api/admin/upload-certificate", formData, {
-        headers: { "Content-Type": "multipart/form-data" },
-      });
-      setForm({
-        ...form,
-        file_path: res.data.file_url,
-        // Persist the Cloudinary public_id alongside the secure_url so the
-        // public proxy endpoint can sign a download URL for the file.
-        file_public_id: res.data.public_id || "",
-      });
-      toast.success("File uploaded");
-    } catch {
-      toast.error("Upload failed");
-    } finally {
-      setUploading(false);
-      if (fileInputRef.current) fileInputRef.current.value = "";
-    }
-  };
 
   const fetchCertificates = () => {
     api
@@ -82,7 +51,6 @@ export default function AdminCertificates() {
         issuer: form.issuer,
         date: form.date,
         file_path: form.file_path || null,
-        file_public_id: form.file_public_id || null,
       };
       if (editingId) {
         await api.put(`/api/admin/certificates/${editingId}`, payload);
@@ -108,7 +76,6 @@ export default function AdminCertificates() {
       issuer: cert.issuer,
       date: cert.date,
       file_path: cert.file_path || "",
-      file_public_id: cert.file_public_id || "",
     });
     setEditingId(cert.id);
     setShowForm(true);
@@ -199,37 +166,19 @@ export default function AdminCertificates() {
             </div>
             <div>
               <label className="block text-sm text-muted mb-1">
-                Certificate File (jpg/pdf)
+                Certificate Link (URL)
               </label>
-              <div className="flex items-center gap-2">
-                <input
-                  type="text"
-                  value={form.file_path}
-                  onChange={(e) => setForm({ ...form, file_path: e.target.value })}
-                  className="flex-1 bg-background border border-border rounded-lg px-3 py-2 text-sm text-foreground focus:outline-none focus:border-primary"
-                  placeholder="Upload or paste URL..."
-                />
-                <input
-                  ref={fileInputRef}
-                  type="file"
-                  accept="image/*,.pdf"
-                  onChange={handleFileUpload}
-                  className="hidden"
-                />
-                <button
-                  type="button"
-                  onClick={() => fileInputRef.current?.click()}
-                  disabled={uploading}
-                  className="inline-flex items-center gap-1 px-3 py-2 bg-background border border-border rounded-lg text-sm text-muted hover:text-foreground hover:border-primary/50 transition-colors disabled:opacity-50"
-                >
-                  {uploading ? (
-                    <Loader2 size={14} className="animate-spin" />
-                  ) : (
-                    <Upload size={14} />
-                  )}
-                  Upload
-                </button>
-              </div>
+              <input
+                type="url"
+                value={form.file_path}
+                onChange={(e) => setForm({ ...form, file_path: e.target.value })}
+                className="w-full bg-background border border-border rounded-lg px-3 py-2 text-sm text-foreground focus:outline-none focus:border-primary"
+                placeholder="https://www.credly.com/badges/..."
+                required
+              />
+              <p className="text-xs text-muted mt-1">
+                Public visitors will be redirected to this URL when they click the certificate.
+              </p>
             </div>
             <button
               type="submit"
