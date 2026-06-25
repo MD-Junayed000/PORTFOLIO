@@ -239,7 +239,8 @@ export default function HeaderGame() {
         ctx.font = "12px sans-serif";
         ctx.textAlign = "center";
         ctx.textBaseline = "middle";
-        drawMultilineText( ctx, "Unlock me!\nFinish the Game!\nClick or press Space to restart", width / 2, height / 2, 16);
+        ctx.fillText("Unlock me!", width / 2, height / 2);
+        ctx.fillText("Finish the Game! Click or press Space to restart", width / 2, height / 2+ 16);
       }
 
       // Draw score
@@ -291,7 +292,3 @@ export default function HeaderGame() {
     </div>
   );
 }
-function drawMultilineText(ctx: CanvasRenderingContext2D, arg1: string, arg2: number, arg3: number, arg4: number) {
-  throw new Error("Function not implemented.");
-}
-
