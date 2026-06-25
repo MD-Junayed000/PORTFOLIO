@@ -239,7 +239,7 @@ export default function HeaderGame() {
         ctx.font = "12px sans-serif";
         ctx.textAlign = "center";
         ctx.textBaseline = "middle";
-        ctx.fillText("Game Over! Click or press Space to restart", width / 2, height / 2);
+        ctx.fillText("Finish the Game! Unlock me! Click or press Space to restart", width / 2, height / 2);
       }
 
       // Draw score
