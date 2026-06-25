@@ -240,7 +240,7 @@ export default function HeaderGame() {
         ctx.textAlign = "center";
         ctx.textBaseline = "middle";
         ctx.fillText("Unlock me!", width / 2, height / 2);
-        ctx.fillText("Finish the Game! Click or press Space to restart", width / 2, height / 2+ 16);
+        ctx.fillText("Finish the Game! Click or press Space to restart", width / 2, height / 2+ 22);
       }
 
       // Draw score
