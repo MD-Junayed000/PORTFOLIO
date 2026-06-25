@@ -78,7 +78,7 @@ export default function Hero() {
     : "/images/profile.png";
 
   return (
-    <section className="relative min-h-screen flex items-center justify-center pt-32 md:pt-40">
+    <section className="relative min-h-screen flex items-center justify-center pt-40">
       <div className="relative z-10 max-w-4xl mx-auto px-4 sm:px-6 lg:px-8 text-center">
         <motion.div
           initial={{ opacity: 0, y: 20 }}

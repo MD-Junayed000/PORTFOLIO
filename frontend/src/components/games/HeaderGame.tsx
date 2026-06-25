@@ -285,7 +285,7 @@ export default function HeaderGame() {
       )}
       {!gameOver && score === 0 && (
         <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
-          <span className="text-xs text-muted/60">Click or press Space to jump!</span>
+          <span className="text-xs text-muted/60">Tap or click to jump!</span>
         </div>
       )}
     </div>

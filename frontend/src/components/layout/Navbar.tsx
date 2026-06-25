@@ -50,8 +50,8 @@ export default function Navbar() {
         </div>
       </div>
 
-      {/* Header Game - decorative runner */}
-      <div className="hidden md:block border-t border-border/50 bg-surface-hover/30">
+      {/* Header Game - decorative runner (visible on all screen sizes) */}
+      <div className="border-t border-border/50 bg-surface-hover/30">
         <div className="max-w-7xl mx-auto">
           <HeaderGame />
         </div>
